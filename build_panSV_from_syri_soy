@@ -1,0 +1,280 @@
+#!/bin/bash
+set -euo pipefail
+
+############################################
+# User settings
+############################################
+REF_FASTA="Gmax_MU-Wm82-a5ref_PI518671_hardmasked.fasta"
+SYRI_ROOT="syri_soy_genomes_syri_out"
+MINLEN=50
+MERGE_DIST=1000
+OUTDIR="panSV_build"
+PYTHON_SCRIPT="syri_out_to_vcf.py"
+SV_TYPES="INS,DEL,INV,DUP"
+
+############################################
+# Checks
+############################################
+command -v python >/dev/null 2>&1 || { echo "[ERROR] python not found"; exit 1; }
+command -v samtools >/dev/null 2>&1 || { echo "[ERROR] samtools not found"; exit 1; }
+command -v bcftools >/dev/null 2>&1 || { echo "[ERROR] bcftools not found"; exit 1; }
+command -v tabix >/dev/null 2>&1 || { echo "[ERROR] tabix not found"; exit 1; }
+command -v SURVIVOR >/dev/null 2>&1 || { echo "[ERROR] SURVIVOR not found in PATH"; exit 1; }
+
+[[ -f "${REF_FASTA}" ]] || { echo "[ERROR] Missing reference FASTA: ${REF_FASTA}"; exit 1; }
+[[ -d "${SYRI_ROOT}" ]] || { echo "[ERROR] Missing SyRI root directory: ${SYRI_ROOT}"; exit 1; }
+[[ -f "${PYTHON_SCRIPT}" ]] || { echo "[ERROR] Missing Python converter: ${PYTHON_SCRIPT}"; exit 1; }
+
+if [[ ! -f "${REF_FASTA}.fai" ]]; then
+    echo "[INFO] Indexing reference FASTA..."
+    samtools faidx "${REF_FASTA}"
+fi
+
+############################################
+# Output folders
+############################################
+RAW_VCF_DIR="${OUTDIR}/01_raw_vcf"
+PLAIN_VCF_DIR="${OUTDIR}/02_plain_sorted_vcf"
+GZ_VCF_DIR="${OUTDIR}/03_sorted_vcfgz"
+MERGE_DIR="${OUTDIR}/04_merged"
+
+mkdir -p "${RAW_VCF_DIR}" "${PLAIN_VCF_DIR}" "${GZ_VCF_DIR}" "${MERGE_DIR}"
+
+############################################
+# Step 1. Find syri.out files
+############################################
+echo "[INFO] Searching for SyRI output files under: ${SYRI_ROOT}"
+
+mapfile -t SYRI_FILES < <(find "${SYRI_ROOT}" -type f -name "*syrisyri.out" | sort)
+
+if [[ ${#SYRI_FILES[@]} -eq 0 ]]; then
+    echo "[ERROR] No files matching *syrisyri.out found under ${SYRI_ROOT}"
+    exit 1
+fi
+
+echo "[INFO] Found ${#SYRI_FILES[@]} SyRI output files."
+
+############################################
+# Step 2. Convert each syri.out to VCF
+############################################
+count=0
+
+for syri_file in "${SYRI_FILES[@]}"; do
+    dir=$(dirname "${syri_file}")
+    base_dir=$(basename "${dir}")
+
+    # Example: Gcan_PI583945.a01_syri -> Gcan_PI583945.a01
+    sample="${base_dir%_syri}"
+
+    raw_vcf="${RAW_VCF_DIR}/${sample}.sv.ge${MINLEN}.vcf"
+    plain_sorted_vcf="${PLAIN_VCF_DIR}/${sample}.sv.ge${MINLEN}.sorted.vcf"
+    gz_sorted_vcf="${GZ_VCF_DIR}/${sample}.sv.ge${MINLEN}.sorted.vcf.gz"
+
+    echo "[INFO] Processing ${sample}"
+
+    python "${PYTHON_SCRIPT}" \
+        --syri "${syri_file}" \
+        --fai "${REF_FASTA}.fai" \
+        --sample "${sample}" \
+        --out "${raw_vcf}" \
+        --minlen "${MINLEN}" \
+        --types "${SV_TYPES}"
+
+    bcftools sort -Ov -o "${plain_sorted_vcf}" "${raw_vcf}"
+    bcftools sort -Oz -o "${gz_sorted_vcf}" "${raw_vcf}"
+    tabix -f -p vcf "${gz_sorted_vcf}"
+
+    rm -f "${raw_vcf}"
+
+    n=$(bcftools view -H "${gz_sorted_vcf}" | wc -l)
+    echo "[OK] ${sample} -> ${n} SVs"
+
+    count=$((count+1))
+done
+
+echo "[INFO] Finished ${count} samples."
+
+############################################
+# Step 3. Build SURVIVOR input list
+############################################
+ls "${PLAIN_VCF_DIR}"/*.sorted.vcf > "${MERGE_DIR}/panSV_vcf_list.txt"
+nfiles=$(wc -l < "${MERGE_DIR}/panSV_vcf_list.txt")
+echo "[INFO] SURVIVOR will merge ${nfiles} VCF files."
+
+############################################
+# Step 4. Merge with SURVIVOR
+############################################
+echo "[INFO] Running SURVIVOR merge..."
+SURVIVOR merge \
+    "${MERGE_DIR}/panSV_vcf_list.txt" \
+    "${MERGE_DIST}" \
+    1 \
+    1 \
+    0 \
+    0 \
+    "${MINLEN}" \
+    "${MERGE_DIR}/panSV_merged.unsorted.vcf"
+
+############################################
+# Step 5. Sort merged VCF and index
+############################################
+echo "[INFO] Sorting merged VCF..."
+bcftools sort \
+    -Ov \
+    -o "${MERGE_DIR}/panSV_merged.sorted.vcf" \
+    "${MERGE_DIR}/panSV_merged.unsorted.vcf"
+
+bcftools sort \
+    -Oz \
+    -o "${MERGE_DIR}/panSV_merged.sorted.vcf.gz" \
+    "${MERGE_DIR}/panSV_merged.unsorted.vcf"
+
+tabix -f -p vcf "${MERGE_DIR}/panSV_merged.sorted.vcf.gz"
+
+############################################
+# Step 6. Quick summaries
+############################################
+echo "[INFO] Final merged VCF:"
+echo "  ${MERGE_DIR}/panSV_merged.sorted.vcf.gz"
+
+echo "[INFO] Total merged SVs:"
+bcftools view -H "${MERGE_DIR}/panSV_merged.sorted.vcf.gz" | wc -l
+
+echo "[INFO] SV type counts:"
+bcftools query -f '%INFO/SVTYPE\n' "${MERGE_DIR}/panSV_merged.sorted.vcf.gz" | sort | uniq -c
+
+echo "[INFO] Support distribution:"
+bcftools query -f '%INFO/SUPP\n' "${MERGE_DIR}/panSV_merged.sorted.vcf.gz" | sort -n | uniq -c | head -20
+
+echo "[DONE]"
+##################################################################################################################
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+#syri_out_to_vcf
+##################################################################################################################
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+#!/usr/bin/env python3
+
+import argparse
+from collections import OrderedDict
+
+def parse_fai(fai_file):
+    contigs = []
+    with open(fai_file) as f:
+        for line in f:
+            parts = line.strip().split("\t")
+            if len(parts) >= 2:
+                contigs.append((parts[0], int(parts[1])))
+    return contigs
+
+def safe_int(x):
+    try:
+        return int(x)
+    except Exception:
+        return None
+
+def compute_lengths(base_type, rs, re, qs, qe):
+    len_ref = 0
+    len_qry = 0
+
+    if rs is not None and re is not None and re >= rs:
+        len_ref = re - rs + 1
+    if qs is not None and qe is not None and qe >= qs:
+        len_qry = qe - qs + 1
+
+    if base_type == "INS":
+        svlen = len_qry
+    elif base_type == "DEL":
+        svlen = len_ref
+    else:
+        svlen = max(len_ref, len_qry)
+
+    return len_ref, len_qry, svlen
+
+def main():
+    parser = argparse.ArgumentParser(description="Convert SyRI syri.out to symbolic SV VCF")
+    parser.add_argument("--syri", required=True, help="Input syri.out")
+    parser.add_argument("--fai", required=True, help="Reference FASTA .fai")
+    parser.add_argument("--sample", required=True, help="Sample name")
+    parser.add_argument("--out", required=True, help="Output VCF")
+    parser.add_argument("--minlen", type=int, default=50, help="Minimum SV length")
+    parser.add_argument("--types", default="INS,DEL,INV,DUP", help="Comma-separated SV types to keep")
+    args = parser.parse_args()
+
+    valid_types = set(x.strip() for x in args.types.split(",") if x.strip())
+    contigs = parse_fai(args.fai)
+
+    with open(args.out, "w") as out:
+        out.write("##fileformat=VCFv4.2\n")
+        out.write("##source=syri_out_to_vcf\n")
+        for chrom, length in contigs:
+            out.write(f"##contig=<ID={chrom},length={length}>\n")
+        for svt in sorted(valid_types):
+            out.write(f'##ALT=<ID={svt},Description="{svt} relative to reference">\n')
+        out.write('##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Structural variant type">\n')
+        out.write('##INFO=<ID=END,Number=1,Type=Integer,Description="End position on reference">\n')
+        out.write('##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="Structural variant length">\n')
+        out.write('##INFO=<ID=ChrB,Number=1,Type=String,Description="Query chromosome">\n')
+        out.write('##INFO=<ID=StartB,Number=1,Type=Integer,Description="Query start">\n')
+        out.write('##INFO=<ID=EndB,Number=1,Type=Integer,Description="Query end">\n')
+        out.write('##INFO=<ID=EventID,Number=1,Type=String,Description="SyRI event ID">\n')
+        out.write('##INFO=<ID=FineType,Number=1,Type=String,Description="SyRI fine type">\n')
+        out.write('##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n')
+        out.write(f"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{args.sample}\n")
+
+        with open(args.syri) as f:
+            for line in f:
+                if not line.strip() or line.startswith("#"):
+                    continue
+
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) < 11:
+                    continue
+
+                ref_chr = parts[0]
+                rs = safe_int(parts[1])
+                re = safe_int(parts[2])
+                qry_chr = parts[5]
+                qs = safe_int(parts[6])
+                qe = safe_int(parts[7])
+                event_id = parts[8]
+                fine_type = parts[9]
+                base_type = parts[10]
+
+                if base_type not in valid_types:
+                    continue
+
+                len_ref, len_qry, svlen = compute_lengths(base_type, rs, re, qs, qe)
+
+                if svlen is None or svlen < args.minlen:
+                    continue
+                if rs is None:
+                    continue
+
+                pos = rs
+                end = rs if base_type == "INS" else (re if re is not None else rs)
+
+                ref = "N"
+                alt = f"<{base_type}>"
+                vcf_id = f"{args.sample}_{event_id}"
+
+                info = OrderedDict()
+                info["SVTYPE"] = base_type
+                info["END"] = end
+                info["SVLEN"] = svlen
+                info["ChrB"] = qry_chr
+                if qs is not None:
+                    info["StartB"] = qs
+                if qe is not None:
+                    info["EndB"] = qe
+                info["EventID"] = event_id
+                info["FineType"] = fine_type
+
+                info_str = ";".join(f"{k}={v}" for k, v in info.items())
+
+                out.write(
+                    f"{ref_chr}\t{pos}\t{vcf_id}\t{ref}\t{alt}\t.\tPASS\t{info_str}\tGT\t1/1\n"
+                )
+
+if __name__ == "__main__":
+    main()
+
