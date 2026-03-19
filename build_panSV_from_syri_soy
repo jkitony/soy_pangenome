@@ -1,6 +1,8 @@
 #/data1/jkitony/soybean/
 conda activate sv_calling_env
 chmod +x syri_out_to_vcf.py -@bottom
+chmod +x build_panSV_from_syri_soy.sh
+
 ./build_panSV_from_syri_soy.sh
 ####################################################
 #!/bin/bash
