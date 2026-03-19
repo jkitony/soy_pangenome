@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+
+import argparse
+import os
+from collections import Counter, defaultdict
+
+import pandas as pd
+import pysam
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Summarize merged Pan-SV VCF into clean TSV tables"
+    )
+    parser.add_argument(
+        "--vcf",
+        required=True,
+        help="Merged sorted VCF.gz, e.g. panSV_build/04_merged/panSV_merged.sorted.vcf.gz",
+    )
+    parser.add_argument(
+        "--outdir",
+        required=True,
+        help="Output directory for summary tables",
+    )
+    args = parser.parse_args()
+
+    os.makedirs(args.outdir, exist_ok=True)
+
+    vcf = pysam.VariantFile(args.vcf)
+
+    type_counter = Counter()
+    chr_counter = Counter()
+    supp_counter = Counter()
+    chr_type_counter = Counter()
+
+    long_rows = []
+
+    for rec in vcf:
+        chrom = rec.contig
+        pos = rec.pos
+        vid = rec.id if rec.id is not None else "."
+        svtype = rec.info.get("SVTYPE", "NA")
+        end = rec.stop if rec.stop is not None else pos
+
+        svlen = rec.info.get("SVLEN", None)
+        if isinstance(svlen, tuple):
+            svlen = svlen[0]
+        if svlen is None:
+            svlen = end - pos + 1
+        try:
+            svlen = abs(int(svlen))
+        except Exception:
+            svlen = abs(int(end - pos + 1))
+
+        supp = rec.info.get("SUPP", 1)
+        if isinstance(supp, tuple):
+            supp = supp[0]
+        try:
+            supp = int(supp)
+        except Exception:
+            supp = 1
+
+        supp_vec = rec.info.get("SUPP_VEC", "")
+        if isinstance(supp_vec, tuple):
+            supp_vec = supp_vec[0]
+
+        type_counter[svtype] += 1
+        chr_counter[chrom] += 1
+        supp_counter[supp] += 1
+        chr_type_counter[(chrom, svtype)] += 1
+
+        long_rows.append(
+            {
+                "CHROM": chrom,
+                "POS": pos,
+                "END": end,
+                "ID": vid,
+                "SVTYPE": svtype,
+                "SVLEN": svlen,
+                "SUPP": supp,
+                "SUPP_VEC": supp_vec,
+            }
+        )
+
+    # 1. by type
+    df_type = pd.DataFrame(
+        [{"SVTYPE": k, "Count": v} for k, v in sorted(type_counter.items())]
+    ).sort_values("Count", ascending=False)
+    df_type.to_csv(os.path.join(args.outdir, "pansv_summary_by_type.tsv"), sep="\t", index=False)
+
+    # 2. by chromosome
+    df_chr = pd.DataFrame(
+        [{"CHROM": k, "Count": v} for k, v in sorted(chr_counter.items())]
+    )
+    df_chr.to_csv(os.path.join(args.outdir, "pansv_summary_by_chr.tsv"), sep="\t", index=False)
+
+    # 3. by support
+    df_supp = pd.DataFrame(
+        [{"SUPP": k, "Count": v} for k, v in sorted(supp_counter.items())]
+    )
+    df_supp.to_csv(os.path.join(args.outdir, "pansv_summary_by_support.tsv"), sep="\t", index=False)
+
+    # 4. chromosome x type
+    df_chr_type = pd.DataFrame(
+        [
+            {"CHROM": chrom, "SVTYPE": svtype, "Count": count}
+            for (chrom, svtype), count in sorted(chr_type_counter.items())
+        ]
+    )
+    df_chr_type.to_csv(os.path.join(args.outdir, "pansv_summary_chr_type.tsv"), sep="\t", index=False)
+
+    # 5. long table
+    df_long = pd.DataFrame(long_rows)
+    df_long = df_long.sort_values(["CHROM", "POS", "END"])
+    df_long.to_csv(os.path.join(args.outdir, "pansv_variants_long.tsv"), sep="\t", index=False)
+
+    # 6. small console summary
+    print("[INFO] Wrote:")
+    print(f"  {args.outdir}/pansv_summary_by_type.tsv")
+    print(f"  {args.outdir}/pansv_summary_by_chr.tsv")
+    print(f"  {args.outdir}/pansv_summary_by_support.tsv")
+    print(f"  {args.outdir}/pansv_summary_chr_type.tsv")
+    print(f"  {args.outdir}/pansv_variants_long.tsv")
+    print("[INFO] Total SVs:", len(df_long))
+
+
+if __name__ == "__main__":
+    main()
