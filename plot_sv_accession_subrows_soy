@@ -1,3 +1,11 @@
+ python plot_sv_accession_subrows_soy.py   \
+ --vcf panSV_build/04_merged/panSV_merged.sorted.vcf.gz   \
+ --vcf_list panSV_build/04_merged/panSV_vcf_list.txt   \
+ --outprefix panSV_build/05_summary/panSV_ALL_accession_subrows_soy   \
+ --types INV DUP DEL INS   --inv_minlen 50   --dup_minlen 50   \
+ --del_minlen 50   --ins_minlen 50   --figwidth 16   --figheight 18   --ncols 5
+
+###################################
 #!/usr/bin/env python3
 
 import argparse
