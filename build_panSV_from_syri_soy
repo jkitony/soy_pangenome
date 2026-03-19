@@ -1,4 +1,7 @@
 #/data1/jkitony/soybean/
+
+./build_panSV_from_syri_soy.sh
+####################################################
 #!/bin/bash
 set -euo pipefail
 
