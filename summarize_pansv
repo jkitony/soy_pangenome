@@ -1,3 +1,5 @@
+python summarize_pansv.py   --vcf panSV_build/04_merged/panSV_merged.sorted.vcf.gz   --outdir panSV_build/05_summary
+#######################################################
 #!/usr/bin/env python3
 
 import argparse
