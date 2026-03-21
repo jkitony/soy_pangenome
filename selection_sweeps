@@ -81,6 +81,7 @@ SN      0       number of others:       0
 SN      0       number of multiallelic sites:   0
 SN      0       number of multiallelic SNP sites:       0
 
+plot-vcfstats -p vcf_stats_plots soy.snp.bi.filt.stats
 #############################################################
 plink --vcf soy.snp.bi.filt.vcf.gz \
       --allow-extra-chr \
