@@ -1,1 +1,92 @@
-#Download and format metadata -Gsoj vs Gmax
+#Download and format metadata from google drive
+#/data1/jkitony/soybean/selection_sweeps
+
+mamba env create -f soy_selection_env.yml
+mamba activate soy_selection
+
+soy_selection_env.yml
+######################
+name: soy_selection
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.11
+  - bcftools
+  - htslib
+  - vcftools
+  - samtools
+  - bedtools
+  - tabix
+  - plink
+  - plink2
+  - vcflib
+  - snpeff
+  - perl
+  - r-base
+  - r-data.table
+  - r-ggplot2
+  - r-dplyr
+  - r-tidyr
+  - r-readr
+  - r-stringr
+  - r-optparse
+  - r-patchwork
+  - pandas
+  - numpy
+  - matplotlib
+  - seaborn
+  - scipy
+  - cyvcf2
+  - pysam
+  - jupyterlab
+  - tectonic
+  - pip
+  - pip:
+      - upsetplot
+###########################################################################################
+bcftools stats Merged_pangenie_multi-samples_Sep04_2025.vcf.gz > vcf.stats
+plot-vcfstats -p vcf_stats_plots vcf.stats
+
+#########################################################################################
+#Extract SNPs
+bcftools view -m2 -M2 -v snps \
+  Merged_pangenie_multi-samples_Sep04_2025.vcf.gz -Oz \
+  -o soy.snp.bi.raw.vcf.gz
+
+tabix -p vcf soy.snp.bi.raw.vcf.gz
+
+#Fill tags needed for filtering
+bcftools +fill-tags soy.snp.bi.raw.vcf.gz -Oz -o soy.snp.bi.tags.vcf.gz -- -t MAF,F_MISSING,AC,AN
+tabix -p vcf soy.snp.bi.tags.vcf.gz
+
+#Filter SNPs
+bcftools view -i 'MAF>=0.05 && F_MISSING<=0.2' \
+  soy.snp.bi.tags.vcf.gz -Oz -o soy.snp.bi.filt.vcf.gz
+
+tabix -p vcf soy.snp.bi.filt.vcf.gz
+
+
+bcftools stats soy.snp.bi.filt.vcf.gz > soy.snp.bi.filt.stats
+##################################################################################################################
+(soy_selection) [ jkitony@10.7.30.227:/data1/jkitony/soybean/selection_sweeps ]$ grep '^SN' soy.snp.bi.filt.stats
+SN      0       number of samples:      815
+SN      0       number of records:      3800401
+SN      0       number of no-ALTs:      0
+SN      0       number of SNPs: 3800401
+SN      0       number of MNPs: 0
+SN      0       number of indels:       0
+SN      0       number of others:       0
+SN      0       number of multiallelic sites:   0
+SN      0       number of multiallelic SNP sites:       0
+
+#############################################################
+plink --vcf soy.snp.bi.filt.vcf.gz \
+      --allow-extra-chr \
+      --double-id \
+      --make-bed \
+      --out soy.snp.bi.filt
+plink --bfile soy.snp.bi.filt --pca 10 --out soy.snp.bi.filt
+
+
