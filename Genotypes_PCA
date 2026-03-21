@@ -1,0 +1,732 @@
+#Download and format metadata from google drive
+#/data1/jkitony/soybean/selection_sweeps
+
+mamba env create -f soy_selection_env.yml
+mamba activate soy_selection
+
+soy_selection_env.yml
+######################
+name: soy_selection
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.11
+  - bcftools
+  - htslib
+  - vcftools
+  - samtools
+  - bedtools
+  - tabix
+  - plink
+  - plink2
+  - vcflib
+  - snpeff
+  - perl
+  - r-base
+  - r-data.table
+  - r-ggplot2
+  - r-dplyr
+  - r-tidyr
+  - r-readr
+  - r-stringr
+  - r-optparse
+  - r-patchwork
+  - pandas
+  - numpy
+  - matplotlib
+  - seaborn
+  - scipy
+  - cyvcf2
+  - pysam
+  - jupyterlab
+  - tectonic
+  - pip
+  - pip:
+      - upsetplot
+###########################################################################################
+bcftools stats Merged_pangenie_multi-samples_Sep04_2025.vcf.gz > vcf.stats
+plot-vcfstats -p vcf_stats_plots vcf.stats
+
+#########################################################################################
+#Extract SNPs
+bcftools view -m2 -M2 -v snps \
+  Merged_pangenie_multi-samples_Sep04_2025.vcf.gz -Oz \
+  -o soy.snp.bi.raw.vcf.gz
+
+tabix -p vcf soy.snp.bi.raw.vcf.gz
+
+#Fill tags needed for filtering
+bcftools +fill-tags soy.snp.bi.raw.vcf.gz -Oz -o soy.snp.bi.tags.vcf.gz -- -t MAF,F_MISSING,AC,AN
+tabix -p vcf soy.snp.bi.tags.vcf.gz
+
+#Filter SNPs
+bcftools view -i 'MAF>=0.05 && F_MISSING<=0.2' \
+  soy.snp.bi.tags.vcf.gz -Oz -o soy.snp.bi.filt.vcf.gz
+
+tabix -p vcf soy.snp.bi.filt.vcf.gz
+
+
+bcftools stats soy.snp.bi.filt.vcf.gz > soy.snp.bi.filt.stats
+##################################################################################################################
+(soy_selection) [ jkitony@10.7.30.227:/data1/jkitony/soybean/selection_sweeps ]$ grep '^SN' soy.snp.bi.filt.stats
+SN      0       number of samples:      815
+SN      0       number of records:      3800401
+SN      0       number of no-ALTs:      0
+SN      0       number of SNPs: 3800401
+SN      0       number of MNPs: 0
+SN      0       number of indels:       0
+SN      0       number of others:       0
+SN      0       number of multiallelic sites:   0
+SN      0       number of multiallelic SNP sites:       0
+
+plot-vcfstats -p vcf_stats_plots soy.snp.bi.filt.stats
+#############################################################
+plink --vcf soy.snp.bi.filt.vcf.gz \
+      --allow-extra-chr \
+      --double-id \
+      --make-bed \
+      --out soy.snp.bi.filt
+plink --bfile soy.snp.bi.filt --pca 10 --out soy.snp.bi.filt
+########################################################################
+#(soy_selection) [ jkitony@10.7.30.227:/data1/jkitony/soybean/selection_sweeps ]$ 
+python plot_soybean_pca_panels.py
+########################################################################
+#!/usr/bin/env python3
+
+import os
+import re
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# =========================================================
+# INPUT FILES
+# =========================================================
+meta_file = "Meta.csv"
+eigenvec_file = "soy.snp.bi.filt.eigenvec"
+eigenval_file = "soy.snp.bi.filt.eigenval"
+out_root = "PCA_by_biology"
+
+# =========================================================
+# SETTINGS
+# =========================================================
+FIG_W = 4
+FIG_H = 4
+DPI = 600
+POINT_SIZE = 18
+ALPHA = 0.9
+EDGEWIDTH = 0.25
+
+# Pairwise PC plots to save
+PC_PAIRS = [
+    ("PC1", "PC2"),
+    ("PC1", "PC3"),
+    ("PC2", "PC3"),
+    ("PC3", "PC4"),
+]
+
+# Colors
+SPECIES_COLORS = {
+    "G.max": "#f28e2b",
+    "G.soja": "#2ca25f",
+}
+
+ECOTYPE_COLORS = {
+    "Cultivar": "#f28e2b",
+    "Landrace": "#4e79a7",
+    "Wild_type": "#2ca25f",
+    "Breeder_line": "#8e63ce",
+}
+
+MATURITY_COLORS = {
+    "Wild": "#2ca25f",
+    "I": "#9ecae1",
+    "II": "#6baed6",
+    "III": "#3182bd",
+    "IV": "#756bb1",
+    "V": "#54278f",
+    "VI": "#9e9ac8",
+    "VII": "#fdae6b",
+    "VIII": "#fd8d3c",
+    "IX": "#d62728",
+    "X": "#a50f15",
+}
+
+# =========================================================
+# HELPERS
+# =========================================================
+def clean_text(x):
+    if pd.isna(x):
+        return pd.NA
+    x = str(x).strip()
+    if x in {"", "NA", "N/A", "nan", "None", "<NA>", "unknown", "Unknown"}:
+        return pd.NA
+    return x
+
+def normalize_species(x):
+    if pd.isna(x):
+        return pd.NA
+    x = str(x).strip()
+    fixes = {
+        "Glycine max": "G.max",
+        "G max": "G.max",
+        "G.max": "G.max",
+        "max": "G.max",
+        "Glycine soja": "G.soja",
+        "G soja": "G.soja",
+        "G.soja": "G.soja",
+        "soja": "G.soja",
+    }
+    return fixes.get(x, x)
+
+def normalize_ecotype(x):
+    if pd.isna(x):
+        return pd.NA
+    x = str(x).strip()
+    fixes = {
+        "cultivar": "Cultivar",
+        "landrace": "Landrace",
+        "wild": "Wild_type",
+        "wild type": "Wild_type",
+        "Wild type": "Wild_type",
+        "wild_type": "Wild_type",
+        "breeder line": "Breeder_line",
+        "Breeder line": "Breeder_line",
+        "breeder_line": "Breeder_line",
+    }
+    return fixes.get(x, x)
+
+def normalize_maturity(x):
+    if pd.isna(x):
+        return pd.NA
+    x = str(x).strip()
+
+    # strip spaces
+    x = re.sub(r"\s+", "", x)
+
+    fixes = {
+        "0": "Wild",
+        "O": "Wild",
+    }
+    if x in fixes:
+        return fixes[x]
+
+    valid = {"I","II","III","IV","V","VI","VII","VIII","IX","X","Wild"}
+    return x if x in valid else pd.NA
+
+def load_eigenvec(path):
+    df = pd.read_csv(path, sep=r"\s+", engine="python", header=None)
+    ncols = df.shape[1]
+
+    if ncols < 6:
+        raise ValueError("Expected at least 6 columns in eigenvec (FID IID PC1 PC2 PC3 PC4).")
+
+    colnames = ["FID", "IID"] + [f"PC{i}" for i in range(1, ncols - 1)]
+    df.columns = colnames
+    return df
+
+def load_eigenval(path, n=4):
+    vals = pd.read_csv(path, header=None)[0].tolist()
+    return vals[:n]
+
+def percent_var(evals):
+    total = sum(evals)
+    if total == 0:
+        return [None] * len(evals)
+    return [100 * x / total for x in evals]
+
+def make_scatter(df, x, y, color_col, palette, title, out_png, out_pdf, order=None):
+    plt.figure(figsize=(FIG_W, FIG_H))
+
+    groups = order if order is not None else sorted(df[color_col].dropna().unique())
+
+    for grp in groups:
+        sub = df[df[color_col] == grp]
+        if len(sub) == 0:
+            continue
+        plt.scatter(
+            sub[x], sub[y],
+            s=POINT_SIZE,
+            alpha=ALPHA,
+            c=palette.get(grp, "#999999"),
+            edgecolors="black",
+            linewidths=EDGEWIDTH,
+            label=f"{grp} (n={len(sub)})"
+        )
+
+    plt.xlabel(df.attrs.get(f"{x}_label", x))
+    plt.ylabel(df.attrs.get(f"{y}_label", y))
+    plt.title(title, fontsize=10)
+    plt.legend(frameon=False, fontsize=7, loc="best")
+    plt.tight_layout()
+    plt.savefig(out_png, dpi=DPI)
+    plt.savefig(out_pdf)
+    plt.close()
+
+# =========================================================
+# READ METADATA
+# =========================================================
+try:
+    meta = pd.read_csv(meta_file, encoding="utf-8")
+except UnicodeDecodeError:
+    meta = pd.read_csv(meta_file, encoding="latin1", low_memory=False)
+
+meta.columns = meta.columns.str.strip()
+
+required_cols = ["Sample", "Species", "Ecotype", "Maturity_group"]
+for col in required_cols:
+    if col not in meta.columns:
+        raise ValueError(f"Missing required metadata column: {col}")
+
+for col in required_cols:
+    meta[col] = meta[col].apply(clean_text)
+
+meta["Species"] = meta["Species"].apply(normalize_species)
+meta["Ecotype"] = meta["Ecotype"].apply(normalize_ecotype)
+meta["Maturity_group"] = meta["Maturity_group"].apply(normalize_maturity)
+
+# keep one row per sample
+meta = meta.drop_duplicates(subset=["Sample"]).copy()
+
+# =========================================================
+# READ PCA
+# =========================================================
+pca = load_eigenvec(eigenvec_file)
+evals = load_eigenval(eigenval_file, n=4)
+pvar = percent_var(evals)
+
+# plink with --double-id often makes IID = sample name
+merged = pca.merge(meta, left_on="IID", right_on="Sample", how="left")
+
+# annotate axis labels
+for i in range(4):
+    pc = f"PC{i+1}"
+    if i < len(pvar) and pvar[i] is not None:
+        merged.attrs[f"{pc}_label"] = f"{pc} ({pvar[i]:.2f}%)"
+    else:
+        merged.attrs[f"{pc}_label"] = pc
+
+# =========================================================
+# OUTPUT DIRS
+# =========================================================
+comparisons = {
+    "Domestication": {
+        "column": "Species",
+        "palette": SPECIES_COLORS,
+        "order": ["G.soja", "G.max"],
+        "title": "Soybean PCA: Domestication",
+    },
+    "Improvement": {
+        "column": "Ecotype",
+        "palette": ECOTYPE_COLORS,
+        "order": ["Cultivar", "Landrace", "Wild_type", "Breeder_line"],
+        "title": "Soybean PCA: Improvement",
+    },
+    "Adaptation": {
+        "column": "Maturity_group",
+        "palette": MATURITY_COLORS,
+        "order": ["Wild", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"],
+        "title": "Soybean PCA: Adaptation",
+    },
+}
+
+os.makedirs(out_root, exist_ok=True)
+
+# =========================================================
+# SAVE SAMPLE MATCH REPORT
+# =========================================================
+match_report = merged[["FID", "IID", "Sample", "Species", "Ecotype", "Maturity_group"]].copy()
+match_report["Matched_meta"] = match_report["Sample"].notna()
+match_report.to_csv(os.path.join(out_root, "PCA_metadata_match_report.tsv"), sep="\t", index=False)
+
+# =========================================================
+# PLOT
+# =========================================================
+for comp_name, cfg in comparisons.items():
+    comp_dir = os.path.join(out_root, comp_name)
+    os.makedirs(comp_dir, exist_ok=True)
+
+    color_col = cfg["column"]
+    palette = cfg["palette"]
+    order = cfg["order"]
+
+    sub = merged.dropna(subset=[color_col]).copy()
+    sub.to_csv(os.path.join(comp_dir, f"{comp_name}_PCA_table.tsv"), sep="\t", index=False)
+
+    for x, y in PC_PAIRS:
+        out_png = os.path.join(comp_dir, f"{comp_name}_{x}_vs_{y}.png")
+        out_pdf = os.path.join(comp_dir, f"{comp_name}_{x}_vs_{y}.pdf")
+
+        make_scatter(
+            df=sub,
+            x=x,
+            y=y,
+            color_col=color_col,
+            palette=palette,
+            title=f"{cfg['title']} ({x} vs {y})",
+            out_png=out_png,
+            out_pdf=out_pdf,
+            order=order
+        )
+
+# =========================================================
+# SUMMARY
+# =========================================================
+print("Finished PCA plotting.")
+print(f"Output root: {out_root}")
+print(f"Total PCA samples: {len(pca)}")
+print(f"Matched to metadata: {merged['Sample'].notna().sum()}")
+print(f"Unmatched PCA samples: {merged['Sample'].isna().sum()}")
+
+for comp_name, cfg in comparisons.items():
+    color_col = cfg["column"]
+    sub = merged.dropna(subset=[color_col]).copy()
+    print(f"\n[{comp_name}] {color_col}")
+    print(sub[color_col].value_counts(dropna=False))
+
+######################################################################################################################
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+#(soy_selection) [ jkitony@10.7.30.227:/data1/jkitony/soybean/selection_sweeps ]$ python prepare_soybean_pca_groups.py
+######################################################################################################################
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+#!/usr/bin/env python3
+
+import pandas as pd
+import re
+
+meta_file = "Meta.csv"
+
+def clean_text(x):
+    if pd.isna(x):
+        return pd.NA
+    x = str(x).strip()
+    if x in {"", "NA", "N/A", "nan", "None", "<NA>", "unknown", "Unknown"}:
+        return pd.NA
+    return x
+
+def normalize_species(x):
+    if pd.isna(x):
+        return pd.NA
+    x = str(x).strip()
+    fixes = {
+        "G.max": "G.max",
+        "G max": "G.max",
+        "Glycine max": "G.max",
+        "max": "G.max",
+        "G.soja": "G.soja",
+        "G soja": "G.soja",
+        "Glycine soja": "G.soja",
+        "soja": "G.soja",
+    }
+    return fixes.get(x, x)
+
+def normalize_ecotype(x):
+    if pd.isna(x):
+        return pd.NA
+    x = str(x).strip()
+    fixes = {
+        "cultivar": "Cultivar",
+        "Cultivar": "Cultivar",
+        "landrace": "Landrace",
+        "Landrace": "Landrace",
+        "wild": "Wild_type",
+        "wild type": "Wild_type",
+        "Wild type": "Wild_type",
+        "Wild_type": "Wild_type",
+        "breeder line": "Breeder_line",
+        "Breeder line": "Breeder_line",
+        "Breeder_line": "Breeder_line",
+    }
+    return fixes.get(x, x)
+
+def normalize_maturity(x):
+    if pd.isna(x):
+        return pd.NA
+    x = str(x).strip()
+    x = re.sub(r"\s+", "", x)
+
+    fixes = {
+        "0": "Wild",
+        "O": "Wild",
+    }
+    if x in fixes:
+        return fixes[x]
+
+    valid = {"Wild", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"}
+    return x if x in valid else pd.NA
+
+def write_keep(df, outfile):
+    with open(outfile, "w") as f:
+        for s in df["Sample"].dropna().astype(str).unique():
+            f.write(f"{s}\t{s}\n")
+
+try:
+    meta = pd.read_csv(meta_file, encoding="utf-8")
+except UnicodeDecodeError:
+    meta = pd.read_csv(meta_file, encoding="latin1", low_memory=False)
+
+meta.columns = meta.columns.str.strip()
+
+required = ["Sample", "Species", "Ecotype", "Maturity_group"]
+for col in required:
+    if col not in meta.columns:
+        raise ValueError(f"Missing required column: {col}")
+
+for col in required:
+    meta[col] = meta[col].apply(clean_text)
+
+meta["Species"] = meta["Species"].apply(normalize_species)
+meta["Ecotype"] = meta["Ecotype"].apply(normalize_ecotype)
+meta["Maturity_group"] = meta["Maturity_group"].apply(normalize_maturity)
+
+meta = meta.drop_duplicates(subset=["Sample"]).copy()
+
+# 1. Domestication: G.max vs G.soja
+dom = meta[meta["Species"].isin(["G.max", "G.soja"])].copy()
+write_keep(dom, "Domestication.keep")
+
+# 2. Improvement: Cultivar vs Landrace
+# usually best to keep only samples with those labels
+imp = meta[meta["Ecotype"].isin(["Cultivar", "Landrace"])].copy()
+write_keep(imp, "Improvement.keep")
+
+# 3. Adaptation: only G.max with maturity group
+# this avoids the wild/domestication split masking maturity structure
+adp = meta[
+    (meta["Species"] == "G.max") &
+    (meta["Maturity_group"].notna()) &
+    (meta["Maturity_group"] != "Wild")
+].copy()
+write_keep(adp, "Adaptation.keep")
+
+# Also save cleaned metadata
+meta.to_csv("Meta.cleaned.csv", index=False)
+
+print("Done.")
+print(f"Domestication samples: {len(dom)}")
+print(dom["Species"].value_counts(dropna=False))
+print()
+print(f"Improvement samples: {len(imp)}")
+print(imp["Ecotype"].value_counts(dropna=False))
+print()
+print(f"Adaptation samples: {len(adp)}")
+print(adp["Maturity_group"].value_counts(dropna=False).sort_index())
+
+######################################################################################################################
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+#(soy_selection) [ jkitony@10.7.30.227:/data1/jkitony/soybean/selection_sweeps ]$ nano run_separate_soybean_pca.sh
+bash run_separate_soybean_pca.sh
+######################################################################################################################
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+#!/bin/bash
+set -euo pipefail
+
+VCF="soy.snp.bi.filt.vcf.gz"
+OUTDIR="Separate_PCA"
+mkdir -p "${OUTDIR}"
+
+run_pca () {
+    NAME=$1
+    KEEP=$2
+
+    echo "Running ${NAME} ..."
+
+    # Step 1: convert subset to PLINK
+    plink --vcf "${VCF}" \
+      --allow-extra-chr \
+      --double-id \
+      --keep "${KEEP}" \
+      --make-bed \
+      --out "${OUTDIR}/${NAME}"
+
+    # Step 2: LD pruning
+    plink --bfile "${OUTDIR}/${NAME}" \
+      --indep-pairwise 50 5 0.2 \
+      --out "${OUTDIR}/${NAME}"
+
+    # Step 3: PCA on pruned SNPs
+    plink --bfile "${OUTDIR}/${NAME}" \
+      --extract "${OUTDIR}/${NAME}.prune.in" \
+      --pca 4 \
+      --out "${OUTDIR}/${NAME}"
+}
+
+run_pca "Domestication" "Domestication.keep"
+run_pca "Improvement"   "Improvement.keep"
+run_pca "Adaptation"    "Adaptation.keep"
+
+echo "All PCA runs completed."
+
+######################################################################################################################
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+#(soy_selection) [ jkitony@10.7.30.227:/data1/jkitony/soybean/selection_sweeps ]$ nano plot_soybean_separate_pca.py
+python plot_soybean_separate_pca.py
+######################################################################################################################
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+#!/usr/bin/env python3
+
+import os
+import re
+import pandas as pd
+import matplotlib.pyplot as plt
+
+META_FILE = "Meta.cleaned.csv"
+PCA_DIR = "Separate_PCA"
+OUT_ROOT = "Separate_PCA_Plots"
+
+FIG_W = 4
+FIG_H = 4
+DPI = 600
+POINT_SIZE = 18
+ALPHA = 0.9
+EDGEWIDTH = 0.25
+
+PC_PAIRS = [
+    ("PC1", "PC2"),
+    ("PC1", "PC3"),
+    ("PC2", "PC3"),
+    ("PC3", "PC4"),
+]
+
+SPECIES_COLORS = {
+    "G.max": "#f28e2b",
+    "G.soja": "#2ca25f",
+}
+
+ECOTYPE_COLORS = {
+    "Cultivar": "#f28e2b",
+    "Landrace": "#4e79a7",
+}
+
+MATURITY_COLORS = {
+    "I": "#9ecae1",
+    "II": "#6baed6",
+    "III": "#3182bd",
+    "IV": "#756bb1",
+    "V": "#54278f",
+    "VI": "#9e9ac8",
+    "VII": "#fdae6b",
+    "VIII": "#fd8d3c",
+    "IX": "#d62728",
+    "X": "#a50f15",
+}
+
+CONFIG = {
+    "Domestication": {
+        "color_col": "Species",
+        "palette": SPECIES_COLORS,
+        "order": ["G.soja", "G.max"],
+        "title": "Soybean PCA: Domestication",
+    },
+    "Improvement": {
+        "color_col": "Ecotype",
+        "palette": ECOTYPE_COLORS,
+        "order": ["Cultivar", "Landrace"],
+        "title": "Soybean PCA: Improvement",
+    },
+    "Adaptation": {
+        "color_col": "Maturity_group",
+        "palette": MATURITY_COLORS,
+        "order": ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"],
+        "title": "Soybean PCA: Adaptation",
+    },
+}
+
+def load_eigenvec(path):
+    df = pd.read_csv(path, sep=r"\s+", engine="python", header=None)
+    ncols = df.shape[1]
+    if ncols < 6:
+        raise ValueError(f"{path}: expected at least 6 columns")
+    df.columns = ["FID", "IID"] + [f"PC{i}" for i in range(1, ncols - 1)]
+    return df
+
+def load_eigenval(path):
+    return pd.read_csv(path, header=None)[0].tolist()
+
+def percent_var(vals):
+    total = sum(vals)
+    return [100 * v / total if total > 0 else 0 for v in vals]
+
+def make_scatter(df, x, y, color_col, palette, order, title, out_png, out_pdf):
+    plt.figure(figsize=(FIG_W, FIG_H))
+
+    for grp in order:
+        sub = df[df[color_col] == grp]
+        if len(sub) == 0:
+            continue
+        plt.scatter(
+            sub[x], sub[y],
+            s=POINT_SIZE,
+            alpha=ALPHA,
+            c=palette.get(grp, "#999999"),
+            edgecolors="black",
+            linewidths=EDGEWIDTH,
+            label=f"{grp} (n={len(sub)})"
+        )
+
+    plt.xlabel(df.attrs.get(f"{x}_label", x))
+    plt.ylabel(df.attrs.get(f"{y}_label", y))
+    plt.title(title, fontsize=10)
+    plt.legend(frameon=False, fontsize=7, loc="best")
+    plt.tight_layout()
+    plt.savefig(out_png, dpi=DPI)
+    plt.savefig(out_pdf)
+    plt.close()
+
+meta = pd.read_csv(META_FILE)
+meta.columns = meta.columns.str.strip()
+meta = meta.drop_duplicates(subset=["Sample"]).copy()
+
+os.makedirs(OUT_ROOT, exist_ok=True)
+
+for name, cfg in CONFIG.items():
+    eigenvec_file = os.path.join(PCA_DIR, f"{name}.eigenvec")
+    eigenval_file = os.path.join(PCA_DIR, f"{name}.eigenval")
+
+    pca = load_eigenvec(eigenvec_file)
+    evals = load_eigenval(eigenval_file)
+    pvar = percent_var(evals)
+
+    merged = pca.merge(meta, left_on="IID", right_on="Sample", how="left")
+
+    for i in range(4):
+        pc = f"PC{i+1}"
+        merged.attrs[f"{pc}_label"] = f"{pc} ({pvar[i]:.2f}%)"
+
+    color_col = cfg["color_col"]
+    palette = cfg["palette"]
+    order = cfg["order"]
+
+    sub = merged.dropna(subset=[color_col]).copy()
+
+    outdir = os.path.join(OUT_ROOT, name)
+    os.makedirs(outdir, exist_ok=True)
+
+    sub.to_csv(os.path.join(outdir, f"{name}_PCA_table.tsv"), sep="\t", index=False)
+
+    for x, y in PC_PAIRS:
+        out_png = os.path.join(outdir, f"{name}_{x}_vs_{y}.png")
+        out_pdf = os.path.join(outdir, f"{name}_{x}_vs_{y}.pdf")
+
+        make_scatter(
+            df=sub,
+            x=x,
+            y=y,
+            color_col=color_col,
+            palette=palette,
+            order=order,
+            title=f"{cfg['title']} ({x} vs {y})",
+            out_png=out_png,
+            out_pdf=out_pdf
+        )
+
+    print(f"\n{name}")
+    print(sub[color_col].value_counts(dropna=False))
+    print(f"Saved to: {outdir}")
+
+print("\nFinished all separate PCA plots.")
+
+
+
+
