@@ -1,0 +1,394 @@
+#Fig.X (a)
+#!/usr/bin/env python3
+
+import json
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.patheffects as pe
+import numpy as np
+from matplotlib.patches import Patch
+
+# =========================================================
+# FILES
+# =========================================================
+meta_file = "Meta.csv"
+geojson_file = "world.geojson.json"
+out_csv = "Meta_with_plot_coordinates.csv"
+out_png = "soybean_samples_geography_geojson_4x2in.png"
+out_pdf = "soybean_samples_geography_geojson_4x2in.pdf"
+
+# =========================================================
+# MAP / PLOT SETTINGS
+# =========================================================
+MAP_EXTENT = [-180, 180, -90, 90]
+
+# exact publication panel size
+FIG_WIDTH = 4
+FIG_HEIGHT = 2
+PNG_DPI = 600
+
+# colors
+SAMPLED_COUNTRY_FILL = "#cfe8f3"    # light blue
+UNSAMPLED_COUNTRY_FILL = "#e0e0e0"  # gray
+COUNTRY_EDGE = "white"
+
+DOT_COLOR = "#2ca25f"               # green
+DOT_EDGE = "black"
+
+# bubble sizing tuned for small panel
+POINT_ALPHA = 0.95
+USE_LOG_SIZE = True
+SIZE_SCALE = 14
+LINEAR_SIZE_SCALE = 5
+MIN_SIZE = 10
+
+# labels tuned for compact figure
+LABEL_MIN_COUNT = 10
+LABEL_SIZE = 4.8
+
+# text sizes
+TITLE_SIZE = 7
+LEGEND_SIZE = 5
+ANCHOR_LABEL_SIZE = 5
+
+SHOW_ANCHORS = False
+ANCHOR_SIZE = 25
+
+# =========================================================
+# READ METADATA SAFELY
+# =========================================================
+try:
+    df = pd.read_csv(meta_file, encoding="utf-8")
+except UnicodeDecodeError:
+    df = pd.read_csv(meta_file, encoding="latin1", low_memory=False)
+
+df.columns = df.columns.str.strip()
+
+if "Origin country" in df.columns and "Country" not in df.columns:
+    df = df.rename(columns={"Origin country": "Country"})
+
+if "Country" not in df.columns:
+    raise ValueError("Column 'Country' not found in Meta.csv")
+
+if "Location" not in df.columns:
+    df["Location"] = pd.NA
+
+# =========================================================
+# CLEAN TEXT
+# =========================================================
+for col in ["Country", "Location"]:
+    df[col] = df[col].astype(str).str.strip()
+
+missing_vals = {"NA", "N/A", "Unknown", "unknown", "", "nan", "None", "<NA>"}
+df["Country"] = df["Country"].apply(lambda x: pd.NA if x in missing_vals else x)
+df["Location"] = df["Location"].apply(lambda x: pd.NA if x in missing_vals else x)
+
+df = df.dropna(subset=["Country"]).copy()
+
+# =========================================================
+# COUNTRY NAME NORMALIZATION
+# =========================================================
+country_fix = {
+    "USA": "United States of America",
+    "U.S.A.": "United States of America",
+    "United States": "United States of America",
+    "Serbia": "Republic of Serbia",
+    "Korea": "South Korea",
+}
+
+df["Country"] = df["Country"].replace(country_fix)
+
+# =========================================================
+# OPTIONAL EXACT LOCATION COORDINATES
+# Format: (country, location): (plot_name, latitude, longitude)
+# =========================================================
+location_coords = {
+    ("United States of America", "Illinois"): ("Illinois, USA", 40.6331, -89.3985),
+    ("South Korea", "Seoul"): ("Seoul, South Korea", 37.5665, 126.9780),
+    ("China", "Sichuan"): ("Sichuan, China", 30.6517, 104.0759),
+    ("China", "sichuan"): ("Sichuan, China", 30.6517, 104.0759),
+    ("Japan", "Kyushu"): ("Kyushu, Japan", 33.0000, 130.5000),
+    ("Japan", "Tokyo"): ("Tokyo, Japan", 35.6762, 139.6503),
+    ("Tanzania", "Dodoma"): ("Dodoma, Tanzania", -6.1630, 35.7516),
+}
+
+# =========================================================
+# LOAD GEOJSON
+# =========================================================
+with open(geojson_file, "r", encoding="utf-8") as f:
+    geo = json.load(f)
+
+# =========================================================
+# GET COUNTRY NAME FROM GEOJSON PROPERTIES
+# =========================================================
+def get_feature_name(feature):
+    props = feature.get("properties", {})
+    for key in ["name", "ADMIN", "admin", "NAME", "country", "COUNTRY"]:
+        if key in props and props[key]:
+            return str(props[key]).strip()
+    return None
+
+# =========================================================
+# BUILD COUNTRY CENTROIDS FROM GEOJSON
+# =========================================================
+country_centroids = {}
+
+for feature in geo["features"]:
+    name = get_feature_name(feature)
+    if not name:
+        continue
+
+    geom = feature.get("geometry")
+    if geom is None:
+        continue
+
+    coords_list = []
+
+    if geom["type"] == "Polygon":
+        for ring in geom["coordinates"]:
+            coords_list.extend(ring)
+
+    elif geom["type"] == "MultiPolygon":
+        for poly in geom["coordinates"]:
+            for ring in poly:
+                coords_list.extend(ring)
+
+    if coords_list:
+        xs, ys = zip(*coords_list)
+        centroid_lon = sum(xs) / len(xs)
+        centroid_lat = sum(ys) / len(ys)
+        country_centroids[name] = (centroid_lat, centroid_lon)
+
+# =========================================================
+# MAP METADATA COUNTRY NAMES -> GEOJSON COUNTRY NAMES
+# =========================================================
+geojson_name_fix = {
+    "United States of America": "United States of America",
+    "South Korea": "South Korea",
+    "North Korea": "North Korea",
+    "Russia": "Russia",
+    "Vietnam": "Vietnam",
+    "Taiwan": "Taiwan",
+    "Tanzania": "United Republic of Tanzania",
+}
+
+# =========================================================
+# ASSIGN COORDINATES
+# =========================================================
+def assign_coords(row):
+    country = row["Country"]
+    location = row["Location"]
+
+    if pd.notna(location):
+        key = (country, location)
+        if key in location_coords:
+            place, lat, lon = location_coords[key]
+            return pd.Series([place, lat, lon, "reported_location"])
+
+    geo_country = geojson_name_fix.get(country, country)
+    if geo_country in country_centroids:
+        lat, lon = country_centroids[geo_country]
+        return pd.Series([geo_country, lat, lon, "centroid"])
+
+    return pd.Series([pd.NA, pd.NA, pd.NA, "unmapped"])
+
+df[["Plot_place", "Latitude", "Longitude", "Coord_source"]] = df.apply(assign_coords, axis=1)
+
+# =========================================================
+# KEEP ONLY MAPPED RECORDS
+# =========================================================
+df_mapped = df.dropna(subset=["Latitude", "Longitude"]).copy()
+
+# =========================================================
+# SAVE SAMPLE-LEVEL COORDINATES
+# =========================================================
+df_mapped.to_csv(out_csv, index=False)
+
+# =========================================================
+# AGGREGATE TO BUBBLES
+# =========================================================
+agg = (
+    df_mapped
+    .groupby(["Plot_place", "Latitude", "Longitude", "Coord_source"], dropna=False)
+    .size()
+    .reset_index(name="Count")
+)
+
+if USE_LOG_SIZE:
+    agg["Size"] = np.log1p(agg["Count"]) * SIZE_SCALE + MIN_SIZE
+else:
+    agg["Size"] = agg["Count"] * LINEAR_SIZE_SCALE + MIN_SIZE
+
+# =========================================================
+# COUNTRIES WITH SAMPLES
+# =========================================================
+sampled_countries = set(
+    geojson_name_fix.get(c, c)
+    for c in df_mapped["Country"].dropna().unique()
+)
+
+# =========================================================
+# OPTIONAL ANCHORS
+# =========================================================
+anchors = pd.DataFrame({
+    "name": ["Illinois", "Kyushu", "Tanzania"],
+    "lat": [40.6331, 33.0000, -6.1630],
+    "lon": [-89.3985, 130.5000, 35.7516],
+    "color": ["blue", "red", "green"]
+})
+
+# =========================================================
+# PLOT
+# =========================================================
+fig, ax = plt.subplots(figsize=(FIG_WIDTH, FIG_HEIGHT))
+
+# filled world map
+for feature in geo["features"]:
+    geom = feature.get("geometry")
+    if geom is None:
+        continue
+
+    name = get_feature_name(feature)
+
+    facecolor = (
+        SAMPLED_COUNTRY_FILL if name in sampled_countries
+        else UNSAMPLED_COUNTRY_FILL
+    )
+
+    if geom["type"] == "Polygon":
+        for ring in geom["coordinates"]:
+            xs, ys = zip(*ring)
+            ax.fill(
+                xs, ys,
+                facecolor=facecolor,
+                edgecolor=COUNTRY_EDGE,
+                linewidth=0.25,
+                zorder=1
+            )
+
+    elif geom["type"] == "MultiPolygon":
+        for poly in geom["coordinates"]:
+            for ring in poly:
+                xs, ys = zip(*ring)
+                ax.fill(
+                    xs, ys,
+                    facecolor=facecolor,
+                    edgecolor=COUNTRY_EDGE,
+                    linewidth=0.25,
+                    zorder=1
+                )
+
+# sample bubbles
+ax.scatter(
+    agg["Longitude"],
+    agg["Latitude"],
+    s=agg["Size"],
+    c=DOT_COLOR,
+    alpha=POINT_ALPHA,
+    edgecolors=DOT_EDGE,
+    linewidths=0.3,
+    zorder=3
+)
+
+# optional anchors
+if SHOW_ANCHORS:
+    ax.scatter(
+        anchors["lon"],
+        anchors["lat"],
+        s=ANCHOR_SIZE,
+        c=anchors["color"],
+        edgecolor="black",
+        linewidth=0.4,
+        zorder=5
+    )
+
+    for _, row in anchors.iterrows():
+        ax.text(
+            row["lon"] + 2,
+            row["lat"] + 1,
+            row["name"],
+            fontsize=ANCHOR_LABEL_SIZE,
+            color=row["color"],
+            weight="bold",
+            zorder=6
+        )
+
+# labels for larger bubbles only
+for _, row in agg.iterrows():
+    if row["Count"] >= LABEL_MIN_COUNT:
+        txt = ax.text(
+            row["Longitude"],
+            row["Latitude"],
+            str(row["Count"]),
+            fontsize=LABEL_SIZE,
+            ha="center",
+            va="center",
+            color="white",
+            weight="bold",
+            zorder=4
+        )
+        txt.set_path_effects([
+            pe.withStroke(linewidth=1.0, foreground="black")
+        ])
+
+# legend
+legend_elements = [
+    Patch(facecolor=SAMPLED_COUNTRY_FILL, edgecolor=COUNTRY_EDGE, label="Sampled countries"),
+    Patch(facecolor=UNSAMPLED_COUNTRY_FILL, edgecolor=COUNTRY_EDGE, label="Unsampled countries"),
+]
+
+ax.legend(
+    handles=legend_elements,
+    loc="lower left",
+    bbox_to_anchor=(0.02, 0.34),
+    fontsize=LEGEND_SIZE,
+    frameon=False,
+    handlelength=1.0,
+    handletextpad=0.4,
+    labelspacing=0.3,
+    borderpad=0.2
+)
+
+# =========================================================
+# FINAL AXIS SETTINGS
+# =========================================================
+ax.set_xlim(MAP_EXTENT[0], MAP_EXTENT[1])
+ax.set_ylim(MAP_EXTENT[2], MAP_EXTENT[3])
+ax.set_aspect("auto")
+ax.set_xticks([])
+ax.set_yticks([])
+
+for spine in ax.spines.values():
+    spine.set_visible(False)
+
+ax.set_title("Global origin of soybean accessions", fontsize=TITLE_SIZE, pad=2)
+
+# avoid tight_layout for tiny map panels; use manual margins
+fig.subplots_adjust(left=0.01, right=0.995, top=0.92, bottom=0.03)
+
+plt.savefig(out_png, dpi=PNG_DPI, bbox_inches="tight", pad_inches=0.01)
+plt.savefig(out_pdf, bbox_inches="tight", pad_inches=0.01)
+plt.show()
+
+# =========================================================
+# REPORT
+# =========================================================
+unmapped = df[df["Coord_source"] == "unmapped"].copy()
+
+print(f"Saved coordinate table: {out_csv}")
+print(f"Saved PNG: {out_png}")
+print(f"Saved PDF: {out_pdf}")
+print(f"Total samples: {len(df)}")
+print(f"Mapped samples: {len(df_mapped)}")
+print(f"Unmapped samples: {len(unmapped)}")
+print(f"Countries represented in input: {df['Country'].nunique()}")
+print(f"Unique plotted locations: {len(agg)}")
+
+if len(unmapped) > 0:
+    print("\nUnmapped country names to check:")
+    print(unmapped["Country"].value_counts())
+
+# Optional debug
+# for k in sorted(country_centroids):
+#     if "Tanz" in k or "Korea" in k or "Viet" in k or "Russia" in k:
+#         print(k)
