@@ -1,0 +1,405 @@
+(soy_selection) [ jkitony@10.7.30.227:/data1/jkitony/soybean/selection_sweeps ]$
+
+bcftools query -l soy.snp.bi.filt.vcf.gz > vcf_samples.txt
+python make_selection_groups.py
+wc -l Cultivar.txt Landrace.txt
+head Cultivar.txt
+head Landrace.txt
+#################################################################################
+#!/usr/bin/env python3
+
+import pandas as pd
+
+META = "Meta.csv"
+VCF_SAMPLES = "vcf_samples.txt"
+
+def clean(x):
+    if pd.isna(x):
+        return pd.NA
+    x = str(x).strip()
+    if x in {"", "NA", "N/A", "nan", "None", "<NA>"}:
+        return pd.NA
+    return x
+
+def norm_ecotype(x):
+    if pd.isna(x):
+        return pd.NA
+    x = str(x).strip()
+    fixes = {
+        "cultivar": "Cultivar",
+        "landrace": "Landrace",
+        "Cultivar": "Cultivar",
+        "Landrace": "Landrace",
+    }
+    return fixes.get(x, x)
+
+try:
+    meta = pd.read_csv(META, encoding="utf-8")
+except UnicodeDecodeError:
+    meta = pd.read_csv(META, encoding="latin1")
+meta.columns = meta.columns.str.strip()
+
+meta["Sample"] = meta["Sample"].apply(clean)
+meta["Ecotype"] = meta["Ecotype"].apply(clean).apply(norm_ecotype)
+
+meta = meta.dropna(subset=["Sample", "Ecotype"]).drop_duplicates(subset=["Sample"])
+
+with open(VCF_SAMPLES) as f:
+    vcf_samples = {line.strip() for line in f if line.strip()}
+
+meta["in_vcf"] = meta["Sample"].isin(vcf_samples)
+
+imp = meta[meta["in_vcf"] & meta["Ecotype"].isin(["Cultivar", "Landrace"])].copy()
+
+cultivar = imp[imp["Ecotype"] == "Cultivar"]["Sample"].sort_values().tolist()
+landrace = imp[imp["Ecotype"] == "Landrace"]["Sample"].sort_values().tolist()
+
+with open("Cultivar.txt", "w") as f:
+    for s in cultivar:
+        f.write(f"{s}\n")
+
+with open("Landrace.txt", "w") as f:
+    for s in landrace:
+        f.write(f"{s}\n")
+
+imp.to_csv("Improvement_samples_in_vcf.tsv", sep="\t", index=False)
+
+print("Cultivar in VCF:", len(cultivar))
+print("Landrace in VCF:", len(landrace))
+print("\nCounts from intersected metadata:")
+print(imp["Ecotype"].value_counts())
+
+################################################################################################
+mkdir -p selection_CL_vs_LR/{fst,pi,plots,tables,scripts}
+cd selection_CL_vs_LR
+nano scripts/run_fst.sh
+bash scripts/run_fst.sh
+#############################################################
+#!/bin/bash
+set -euo pipefail
+
+VCF="../soy.snp.bi.filt.vcf.gz"
+CULTIVAR="../Cultivar.txt"
+LANDRACE="../Landrace.txt"
+OUT="fst/Cultivar_vs_Landrace"
+
+vcftools --gzvcf "$VCF" \
+  --weir-fst-pop "$CULTIVAR" \
+  --weir-fst-pop "$LANDRACE" \
+  --fst-window-size 100000 \
+  --fst-window-step 50000 \
+  --out "$OUT"
+#############################################################
+nano scripts/run_pi.sh
+bash scripts/run_pi.sh
+#############################################################
+#!/bin/bash
+set -euo pipefail
+
+VCF="../soy.snp.bi.filt.vcf.gz"
+CULTIVAR="../Cultivar.txt"
+LANDRACE="../Landrace.txt"
+
+# Cultivar pi
+vcftools --gzvcf "$VCF" \
+  --keep "$CULTIVAR" \
+  --window-pi 100000 \
+  --window-pi-step 50000 \
+  --out pi/Cultivar
+
+# Landrace pi
+vcftools --gzvcf "$VCF" \
+  --keep "$LANDRACE" \
+  --window-pi 100000 \
+  --window-pi-step 50000 \
+  --out pi/Landrace
+#################################################################
+nano scripts/make_selection_table.py
+python scripts/make_selection_table.py
+#################################################################
+#!/usr/bin/env python3
+
+import pandas as pd
+import numpy as np
+
+fst_file = "fst/Cultivar_vs_Landrace.windowed.weir.fst"
+cult_file = "pi/Cultivar.windowed.pi"
+land_file = "pi/Landrace.windowed.pi"
+out_file = "tables/Cultivar_vs_Landrace_selection_windows.tsv"
+
+# -------------------------
+# Read files
+# -------------------------
+fst = pd.read_csv(fst_file, sep=r"\s+")
+cult = pd.read_csv(cult_file, sep=r"\s+")
+land = pd.read_csv(land_file, sep=r"\s+")
+
+# -------------------------
+# Clean columns
+# -------------------------
+fst.columns = [c.strip() for c in fst.columns]
+cult.columns = [c.strip() for c in cult.columns]
+land.columns = [c.strip() for c in land.columns]
+
+# Standardize names
+fst = fst.rename(columns={
+    "CHROM": "CHROM",
+    "BIN_START": "BIN_START",
+    "BIN_END": "BIN_END",
+    "N_VARIANTS": "N_VARIANTS_FST",
+    "WEIGHTED_FST": "WEIGHTED_FST",
+    "MEAN_FST": "MEAN_FST"
+})
+
+cult = cult.rename(columns={
+    "CHROM": "CHROM",
+    "BIN_START": "BIN_START",
+    "BIN_END": "BIN_END",
+    "N_VARIANTS": "N_VARIANTS_CULTIVAR",
+    "PI": "PI_CULTIVAR"
+})
+
+land = land.rename(columns={
+    "CHROM": "CHROM",
+    "BIN_START": "BIN_START",
+    "BIN_END": "BIN_END",
+    "N_VARIANTS": "N_VARIANTS_LANDRACE",
+    "PI": "PI_LANDRACE"
+})
+
+# -------------------------
+# Merge
+# -------------------------
+df = fst.merge(
+    cult[["CHROM", "BIN_START", "BIN_END", "PI_CULTIVAR", "N_VARIANTS_CULTIVAR"]],
+    on=["CHROM", "BIN_START", "BIN_END"],
+    how="outer"
+).merge(
+    land[["CHROM", "BIN_START", "BIN_END", "PI_LANDRACE", "N_VARIANTS_LANDRACE"]],
+    on=["CHROM", "BIN_START", "BIN_END"],
+    how="outer"
+)
+
+# midpoint
+df["MIDPOINT"] = ((df["BIN_START"] + df["BIN_END"]) / 2).astype(float)
+
+# numeric cleanup
+for col in ["WEIGHTED_FST", "MEAN_FST", "PI_CULTIVAR", "PI_LANDRACE"]:
+    if col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+# remove negative FST if desired
+df.loc[df["WEIGHTED_FST"] < 0, "WEIGHTED_FST"] = 0
+
+# pi ratio and log2 ratio
+df["PI_RATIO_LANDRACE_vs_CULTIVAR"] = df["PI_LANDRACE"] / df["PI_CULTIVAR"]
+df["LOG2_PI_RATIO_LR_vs_CL"] = np.log2(df["PI_RATIO_LANDRACE_vs_CULTIVAR"])
+
+# -------------------------
+# Percentile thresholds
+# -------------------------
+fst_thr = df["WEIGHTED_FST"].dropna().quantile(0.95)
+pir_thr = df["LOG2_PI_RATIO_LR_vs_CL"].replace([np.inf, -np.inf], np.nan).dropna().quantile(0.95)
+
+df["TOP5_FST"] = df["WEIGHTED_FST"] >= fst_thr
+df["TOP5_LOG2_PI_RATIO"] = df["LOG2_PI_RATIO_LR_vs_CL"] >= pir_thr
+df["CANDIDATE_BOTH"] = df["TOP5_FST"] & df["TOP5_LOG2_PI_RATIO"]
+
+# order columns
+cols = [
+    "CHROM", "BIN_START", "BIN_END", "MIDPOINT",
+    "N_VARIANTS_FST", "WEIGHTED_FST", "MEAN_FST",
+    "N_VARIANTS_CULTIVAR", "PI_CULTIVAR",
+    "N_VARIANTS_LANDRACE", "PI_LANDRACE",
+    "PI_RATIO_LANDRACE_vs_CULTIVAR", "LOG2_PI_RATIO_LR_vs_CL",
+    "TOP5_FST", "TOP5_LOG2_PI_RATIO", "CANDIDATE_BOTH"
+]
+cols = [c for c in cols if c in df.columns]
+df = df[cols].sort_values(["CHROM", "BIN_START"])
+
+df.to_csv(out_file, sep="\t", index=False)
+
+# thresholds summary
+with open("tables/Cultivar_vs_Landrace_thresholds.txt", "w") as f:
+    f.write(f"95th percentile WEIGHTED_FST\t{fst_thr}\n")
+    f.write(f"95th percentile LOG2_PI_RATIO_LR_vs_CL\t{pir_thr}\n")
+    f.write(f"Candidate windows (both)\t{df['CANDIDATE_BOTH'].sum()}\n")
+
+print("Done.")
+print(f"Saved: {out_file}")
+print(f"FST 95th percentile: {fst_thr:.6f}")
+print(f"log2(pi ratio) 95th percentile: {pir_thr:.6f}")
+print(f"Candidate windows: {df['CANDIDATE_BOTH'].sum()}")
+##################################################################################################
+nano scripts/plot_selection_manhattan.py
+python scripts/plot_selection_manhattan.py
+##################################################################################################
+#!/usr/bin/env python3
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from pathlib import Path
+
+infile = "tables/Cultivar_vs_Landrace_selection_windows.tsv"
+outdir = Path("plots")
+outdir.mkdir(exist_ok=True)
+
+df = pd.read_csv(infile, sep="\t")
+
+# -------------------------
+# Clean chromosome names and ordering
+# -------------------------
+def chr_key(x):
+    x = str(x)
+    x2 = x.replace("Chr", "").replace("chr", "")
+    try:
+        return int(x2)
+    except ValueError:
+        return x2
+
+chroms = sorted(df["CHROM"].dropna().unique(), key=chr_key)
+
+# cumulative coordinates
+offset = 0
+xticks = []
+xlabels = []
+frames = []
+
+for i, chrom in enumerate(chroms):
+    sub = df[df["CHROM"] == chrom].copy().sort_values("MIDPOINT")
+    if sub.empty:
+        continue
+
+    sub["BP_CUM"] = sub["MIDPOINT"] + offset
+    frames.append(sub)
+
+    xticks.append((sub["BP_CUM"].min() + sub["BP_CUM"].max()) / 2)
+    xlabels.append(str(chrom))
+
+    offset = sub["BP_CUM"].max()
+
+plotdf = pd.concat(frames, ignore_index=True)
+
+# thresholds
+fst_thr = plotdf["WEIGHTED_FST"].dropna().quantile(0.95)
+pir_thr = plotdf["LOG2_PI_RATIO_LR_vs_CL"].replace([np.inf, -np.inf], np.nan).dropna().quantile(0.95)
+
+# alternating colors
+chrom_to_color = {chrom: ("#4e79a7" if i % 2 == 0 else "#f28e2b") for i, chrom in enumerate(chroms)}
+plotdf["COLOR"] = plotdf["CHROM"].map(chrom_to_color)
+
+# -------------------------
+# Plot 1: FST
+# -------------------------
+plt.figure(figsize=(14, 4))
+for chrom in chroms:
+    sub = plotdf[plotdf["CHROM"] == chrom]
+    plt.scatter(sub["BP_CUM"], sub["WEIGHTED_FST"], s=8, c=sub["COLOR"], alpha=0.8)
+
+plt.axhline(fst_thr, linestyle="--", linewidth=1)
+plt.xticks(xticks, xlabels, rotation=0)
+plt.ylabel("Weighted FST")
+plt.xlabel("Chromosome")
+plt.title("Cultivar vs Landrace selection scan: FST")
+plt.tight_layout()
+plt.savefig(outdir / "Cultivar_vs_Landrace_FST_manhattan.png", dpi=600)
+plt.savefig(outdir / "Cultivar_vs_Landrace_FST_manhattan.pdf")
+plt.close()
+
+# -------------------------
+# Plot 2: log2 pi ratio
+# -------------------------
+plt.figure(figsize=(14, 4))
+for chrom in chroms:
+    sub = plotdf[plotdf["CHROM"] == chrom]
+    plt.scatter(sub["BP_CUM"], sub["LOG2_PI_RATIO_LR_vs_CL"], s=8, c=sub["COLOR"], alpha=0.8)
+
+plt.axhline(pir_thr, linestyle="--", linewidth=1)
+plt.xticks(xticks, xlabels, rotation=0)
+plt.ylabel("log2(piLandrace / piCultivar)")
+plt.xlabel("Chromosome")
+plt.title("Cultivar vs Landrace selection scan: diversity reduction")
+plt.tight_layout()
+plt.savefig(outdir / "Cultivar_vs_Landrace_log2PiRatio_manhattan.png", dpi=600)
+plt.savefig(outdir / "Cultivar_vs_Landrace_log2PiRatio_manhattan.pdf")
+plt.close()
+
+# -------------------------
+# Plot 3: combined stacked figure
+# -------------------------
+fig, axes = plt.subplots(2, 1, figsize=(14, 7), sharex=True)
+
+# FST
+for chrom in chroms:
+    sub = plotdf[plotdf["CHROM"] == chrom]
+    axes[0].scatter(sub["BP_CUM"], sub["WEIGHTED_FST"], s=8, c=sub["COLOR"], alpha=0.8)
+axes[0].axhline(fst_thr, linestyle="--", linewidth=1)
+axes[0].set_ylabel("Weighted FST")
+axes[0].set_title("Cultivar vs Landrace selection signatures")
+
+# pi ratio
+for chrom in chroms:
+    sub = plotdf[plotdf["CHROM"] == chrom]
+    axes[1].scatter(sub["BP_CUM"], sub["LOG2_PI_RATIO_LR_vs_CL"], s=8, c=sub["COLOR"], alpha=0.8)
+axes[1].axhline(pir_thr, linestyle="--", linewidth=1)
+axes[1].set_ylabel("log2(piLR/piCL)")
+axes[1].set_xlabel("Chromosome")
+axes[1].set_xticks(xticks)
+axes[1].set_xticklabels(xlabels)
+
+plt.tight_layout()
+plt.savefig(outdir / "Cultivar_vs_Landrace_combined_selection_manhattan.png", dpi=600)
+plt.savefig(outdir / "Cultivar_vs_Landrace_combined_selection_manhattan.pdf")
+plt.close()
+
+# -------------------------
+# candidate windows only
+# -------------------------
+cand = plotdf[plotdf["CANDIDATE_BOTH"] == True].copy()
+cand.to_csv(outdir / "Cultivar_vs_Landrace_candidate_windows_for_plot.tsv", sep="\t", index=False)
+
+print("Plots saved to:", outdir)
+print("Candidate windows:", len(cand))
+###########################################################################################################
+yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
+cd ..
+#Subset VCF to only the two groups
+bcftools view -S <(cat Cultivar.txt Landrace.txt) \
+  soy.snp.bi.filt.vcf.gz -Oz -o CL_LR.snp.bi.filt.vcf.gz
+
+tabix -p vcf CL_LR.snp.bi.filt.vcf.gz
+#Make XP-CLR input files
+bcftools query -f '%CHROM\t%CHROM_%POS\t%POS\n' CL_LR.snp.bi.filt.vcf.gz | \
+awk 'BEGIN{OFS="\t"} {print $1,$2,$3/1000000,$3}' > xpclr.map
+
+
+
+
+
+
+
+
+
+
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+run_all_selection_CL_vs_LR.sh
+bash run_all_selection_CL_vs_LR.sh
+###############################
+#!/bin/bash
+set -euo pipefail
+
+echo "Running FST..."
+bash scripts/run_fst.sh
+
+echo "Running pi..."
+bash scripts/run_pi.sh
+
+echo "Merging tables..."
+python scripts/make_selection_table.py
+
+echo "Plotting Manhattan plots..."
+python scripts/plot_selection_manhattan.py
+
+echo "Done."
