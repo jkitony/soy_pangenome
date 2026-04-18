@@ -1,0 +1,199 @@
+(base) [ jkitony@10.7.30.227:/data1/jkitony/Sorghum/panCG ]$
+
+tar -xzf example_data.tar.gz
+
+############
+# one-time channel setup
+conda config --add channels bioconda
+conda config --add channels conda-forge
+conda config --set channel_priority strict
+
+# create a new env
+mamba create -n pancg_env python=3.10 tree wget pip -y
+mamba activate pancg_env
+
+# install main conda packages
+mamba install -c conda-forge tree -y
+mamba install -c bioconda -c conda-forge orthofinder -y
+pip install jcvi
+mamba install -c bioconda -c conda-forge phast -y
+mamba install -c bioconda -c conda-forge diamond blast -y
+####
+
+# install panCG
+pip install panCG
+
+# quick checks
+panCG -h
+orthofinder -h
+diamond --version
+blastp -version
+phyloFit --help
+tree --version
+################
+mkdir -p /data1/jkitony/Sorghum/panCG/bin
+
+mamba activate pancg_env
+export PATH=/data1/jkitony/Sorghum/panCG/bin:$PATH
+#####################
+#temporary halLiftover cactus
+cat > /data1/jkitony/Sorghum/panCG/bin/halLiftover <<'EOF'
+#!/usr/bin/env bash
+apptainer exec /data1/jkitony/Sorghum/panCG/cactus.sif halLiftover "$@"
+EOF
+chmod +x /data1/jkitony/Sorghum/panCG/bin/halLiftover
+#########################################################
+apptainer pull cactus.sif docker://quay.io/comparative-genomics-toolkit/cactus:latest
+
+#cactus wrappers
+cat > /data1/jkitony/Sorghum/panCG/bin/cactus <<'EOF'
+#!/usr/bin/env bash
+apptainer exec /data1/jkitony/Sorghum/panCG/cactus.sif cactus "$@"
+EOF
+chmod +x /data1/jkitony/Sorghum/panCG/bin/cactus
+
+cat > /data1/jkitony/Sorghum/panCG/bin/cactus-hal2maf <<'EOF'
+#!/usr/bin/env bash
+apptainer exec /data1/jkitony/Sorghum/panCG/cactus.sif cactus-hal2maf "$@"
+EOF
+chmod +x /data1/jkitony/Sorghum/panCG/bin/cactus-hal2maf
+
+##################################################################################
+####################################################################################
+#Setup done- CREATE panCG.config.yaml
+#####################################
+cat > /data1/jkitony/Sorghum/panCG/panCG.config.yaml <<'EOF'
+species_tree: "(A_buxifolia,(C_australasica,(C_glauca,(C_limon,(C_sinensis,(F_hindsii,ponkan))))));"
+
+HalFile: /data1/jkitony/Sorghum/panCG/example_data/Citrus.7ways.test_data.hal
+
+GenomeFile:
+  A_buxifolia: /data1/jkitony/Sorghum/panCG/example_data/A_buxifolia/A_buxifolia.genome.fasta
+  C_australasica: /data1/jkitony/Sorghum/panCG/example_data/C_australasica/C_australasica.genome.fasta
+  C_glauca: /data1/jkitony/Sorghum/panCG/example_data/C_glauca/C_glauca.genome.fasta
+  C_limon: /data1/jkitony/Sorghum/panCG/example_data/C_limon/C_limon.genome.fasta
+  C_sinensis: /data1/jkitony/Sorghum/panCG/example_data/C_sinensis/C_sinensis.genome.fasta
+  F_hindsii: /data1/jkitony/Sorghum/panCG/example_data/F_hindsii/F_hindsii.genome.fasta
+  ponkan: /data1/jkitony/Sorghum/panCG/example_data/ponkan/ponkan.genome.fasta
+
+gffFile:
+  A_buxifolia: /data1/jkitony/Sorghum/panCG/example_data/A_buxifolia/A_buxifolia.longest.gff
+  C_australasica: /data1/jkitony/Sorghum/panCG/example_data/C_australasica/C_australasica.longest.gff
+  C_glauca: /data1/jkitony/Sorghum/panCG/example_data/C_glauca/C_glauca.longest.gff
+  C_limon: /data1/jkitony/Sorghum/panCG/example_data/C_limon/C_limon.longest.gff
+  C_sinensis: /data1/jkitony/Sorghum/panCG/example_data/C_sinensis/C_sinensis.longest.gff
+  F_hindsii: /data1/jkitony/Sorghum/panCG/example_data/F_hindsii/F_hindsii.longest.gff
+  ponkan: /data1/jkitony/Sorghum/panCG/example_data/ponkan/ponkan.longest.gff
+
+longest_pep_bed:
+  A_buxifolia: /data1/jkitony/Sorghum/panCG/example_data/A_buxifolia/A_buxifolia.longest.bed
+  C_australasica: /data1/jkitony/Sorghum/panCG/example_data/C_australasica/C_australasica.longest.bed
+  C_glauca: /data1/jkitony/Sorghum/panCG/example_data/C_glauca/C_glauca.longest.bed
+  C_limon: /data1/jkitony/Sorghum/panCG/example_data/C_limon/C_limon.longest.bed
+  C_sinensis: /data1/jkitony/Sorghum/panCG/example_data/C_sinensis/C_sinensis.longest.bed
+  F_hindsii: /data1/jkitony/Sorghum/panCG/example_data/F_hindsii/F_hindsii.longest.bed
+  ponkan: /data1/jkitony/Sorghum/panCG/example_data/ponkan/ponkan.longest.bed
+
+longest_pep_fasta:
+  A_buxifolia: /data1/jkitony/Sorghum/panCG/example_data/A_buxifolia/A_buxifolia.longest.pep.fasta
+  C_australasica: /data1/jkitony/Sorghum/panCG/example_data/C_australasica/C_australasica.longest.pep.fasta
+  C_glauca: /data1/jkitony/Sorghum/panCG/example_data/C_glauca/C_glauca.longest.pep.fasta
+  C_limon: /data1/jkitony/Sorghum/panCG/example_data/C_limon/C_limon.longest.pep.fasta
+  C_sinensis: /data1/jkitony/Sorghum/panCG/example_data/C_sinensis/C_sinensis.longest.pep.fasta
+  F_hindsii: /data1/jkitony/Sorghum/panCG/example_data/F_hindsii/F_hindsii.longest.pep.fasta
+  ponkan: /data1/jkitony/Sorghum/panCG/example_data/ponkan/ponkan.longest.pep.fasta
+
+CNS_bed:
+  A_buxifolia: /data1/jkitony/Sorghum/panCG/example_data/A_buxifolia/A_buxifolia.CNSs.bed
+  C_australasica: /data1/jkitony/Sorghum/panCG/example_data/C_australasica/C_australasica.CNSs.bed
+  C_glauca: /data1/jkitony/Sorghum/panCG/example_data/C_glauca/C_glauca.CNSs.bed
+  C_limon: /data1/jkitony/Sorghum/panCG/example_data/C_limon/C_limon.CNSs.bed
+  C_sinensis: /data1/jkitony/Sorghum/panCG/example_data/C_sinensis/C_sinensis.CNSs.bed
+  F_hindsii: /data1/jkitony/Sorghum/panCG/example_data/F_hindsii/F_hindsii.CNSs.bed
+  ponkan: /data1/jkitony/Sorghum/panCG/example_data/ponkan/ponkan.CNSs.bed
+
+bwFile:
+  A_buxifolia: /data1/jkitony/Sorghum/panCG/example_data/A_buxifolia/A_buxifolia.all.bw
+  C_australasica: /data1/jkitony/Sorghum/panCG/example_data/C_australasica/C_australasica.all.bw
+  C_glauca: /data1/jkitony/Sorghum/panCG/example_data/C_glauca/C_glauca.all.bw
+  C_limon: /data1/jkitony/Sorghum/panCG/example_data/C_limon/C_limon.all.bw
+  C_sinensis: /data1/jkitony/Sorghum/panCG/example_data/C_sinensis/C_sinensis.all.bw
+  F_hindsii: /data1/jkitony/Sorghum/panCG/example_data/F_hindsii/F_hindsii.all.bw
+  ponkan: /data1/jkitony/Sorghum/panCG/example_data/ponkan/ponkan.all.bw
+EOF
+##########################################################################################################
+pkill -f "panCG pangene" || true
+
+ABS=/data1/jkitony/Sorghum/panCG/work_pangene_abs
+rm -rf "$ABS"
+mkdir -p "$ABS/JCVIDir" "$ABS/diamondDir"
+
+species=(C_sinensis C_limon F_hindsii ponkan C_glauca C_australasica A_buxifolia)
+
+for sp1 in "${species[@]}"; do
+  for sp2 in "${species[@]}"; do
+    mkdir -p "$ABS/JCVIDir/${sp1}.${sp2}"
+    mkdir -p "$ABS/diamondDir/${sp1}.${sp2}"
+  done
+done
+
+# run
+panCG pangene \
+  -c /data1/jkitony/Sorghum/panCG/panCG.config.yaml \
+  -w /data1/jkitony/Sorghum/panCG/work_pangene_abs \
+  -r C_sinensis \
+  --diamond_threads 1 \
+  --diamond_parallel 1 \
+  --jcvi_threads 1 \
+  --jcvi_parallel 1 \
+  --orthofinder_threads 2
+
+  #######################################
+cat > /data1/jkitony/Sorghum/panCG/bin/halLiftover <<'EOF'
+#!/usr/bin/env bash
+apptainer exec --bind /data1:/data1 /data1/jkitony/Sorghum/panCG/cactus.sif halLiftover "$@"
+EOF
+chmod +x /data1/jkitony/Sorghum/panCG/bin/halLiftover
+
+cat > /data1/jkitony/Sorghum/panCG/bin/cactus <<'EOF'
+#!/usr/bin/env bash
+apptainer exec --bind /data1:/data1 /data1/jkitony/Sorghum/panCG/cactus.sif cactus "$@"
+EOF
+chmod +x /data1/jkitony/Sorghum/panCG/bin/cactus
+
+cat > /data1/jkitony/Sorghum/panCG/bin/cactus-hal2maf <<'EOF'
+#!/usr/bin/env bash
+apptainer exec --bind /data1:/data1 /data1/jkitony/Sorghum/panCG/cactus.sif cactus-hal2maf "$@"
+EOF
+chmod +x /data1/jkitony/Sorghum/panCG/bin/cactus-hal2maf
+
+
+cat > /data1/jkitony/Sorghum/panCG/bin/halStats <<'EOF'
+#!/usr/bin/env bash
+apptainer exec --bind /data1:/data1 /data1/jkitony/Sorghum/panCG/cactus.sif halStats "$@"
+EOF
+chmod +x /data1/jkitony/Sorghum/panCG/bin/halStats
+
+#Rerun
+panCG pangene \
+  -c /data1/jkitony/Sorghum/panCG/panCG.config.yaml \
+  -w /data1/jkitony/Sorghum/panCG/work_pangene_abs \
+  -r C_sinensis \
+  --diamond_threads 1 \
+  --diamond_parallel 1 \
+  --jcvi_threads 1 \
+  --jcvi_parallel 1 \
+  --orthofinder_threads 2
+
+  ##################################################################################################
+mkdir -p /data1/jkitony/Sorghum/panCG/work_pancns_abs
+
+panCG pancns \
+  -c /data1/jkitony/Sorghum/panCG/panCG.config.yaml \
+  -w /data1/jkitony/Sorghum/panCG/work_pancns_abs \
+  -r C_sinensis \
+  -W /data1/jkitony/Sorghum/panCG/work_pangene_abs
+
+  #Size
+  wc -l /data1/jkitony/Sorghum/panCG/work_pancns_abs/Ref_C_sinensis_IndexDir/Ref.C_sinensis.sort.csv
+
