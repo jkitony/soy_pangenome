@@ -197,3 +197,11 @@ panCG pancns \
   #Size
   wc -l /data1/jkitony/Sorghum/panCG/work_pancns_abs/Ref_C_sinensis_IndexDir/Ref.C_sinensis.sort.csv
 
+#################################################
+mamba activate pancg_env
+panCG CnsGeneLink \
+  -c /data1/jkitony/Sorghum/panCG/panCG.config.yaml \
+  -w /data1/jkitony/Sorghum/panCG/work_cns_gene_abs \
+  -r C_sinensis \
+  -W /data1/jkitony/Sorghum/panCG/work_pangene_abs
+
