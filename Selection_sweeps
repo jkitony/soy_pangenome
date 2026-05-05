@@ -1,3 +1,15 @@
+#Extract SNPs
+bcftools view -m2 -M2 -v snps \  Merged_pangenie_multi-samples_Sep04_2025.vcf.gz -Oz \  -o soy.snp.bi.raw.vcf.gztabix -p vcf soy.snp.bi.raw.vcf.gz
+
+#Fill tags needed for filtering
+bcftools +fill-tags soy.snp.bi.raw.vcf.gz -Oz -o soy.snp.bi.tags.vcf.gz -- -t MAF,F_MISSING,AC,ANtabix -p vcf soy.snp.bi.tags.vcf.gz
+
+#Filter SNPs
+bcftools view -i 'MAF>=0.05 && F_MISSING<=0.2' \  soy.snp.bi.tags.vcf.gz -Oz -o soy.snp.bi.filt.vcf.gztabix -p vcf soy.snp.bi.filt.vcf.gz
+
+
+
+
 (soy_selection) [ jkitony@10.7.30.227:/data1/jkitony/soybean/selection_sweeps ]$
 
 bcftools query -l soy.snp.bi.filt.vcf.gz > vcf_samples.txt
