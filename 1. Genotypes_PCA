@@ -48,7 +48,7 @@ dependencies:
 ###########################################################################################
 bcftools stats Merged_pangenie_multi-samples_Sep04_2025.vcf.gz > vcf.stats
 plot-vcfstats -p vcf_stats_plots vcf.stats
-
+#SNPs=15m; INDELs=9m
 #########################################################################################
 #Extract SNPs
 bcftools view -m2 -M2 -v snps \
@@ -69,6 +69,7 @@ tabix -p vcf soy.snp.bi.filt.vcf.gz
 
 
 bcftools stats soy.snp.bi.filt.vcf.gz > soy.snp.bi.filt.stats
+#SNPs=3.8m
 ##################################################################################################################
 (soy_selection) [ jkitony@10.7.30.227:/data1/jkitony/soybean/selection_sweeps ]$ grep '^SN' soy.snp.bi.filt.stats
 SN      0       number of samples:      815
