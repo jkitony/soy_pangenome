@@ -1,0 +1,323 @@
+#(soy_selection) [ jkitony@10.7.30.227:/data1/jkitony/soybean/SNPs_selection_scan ]$
+#Extract SNPs
+bcftools view -m2 -M2 -v snps \  Merged_pangenie_multi-samples_Sep04_2025.vcf.gz -Oz \  -o soy.snp.bi.raw.vcf.gztabix -p vcf soy.snp.bi.raw.vcf.gz
+
+#Fill tags needed for filtering
+bcftools +fill-tags soy.snp.bi.raw.vcf.gz -Oz -o soy.snp.bi.tags.vcf.gz -- -t MAF,F_MISSING,AC,ANtabix -p vcf soy.snp.bi.tags.vcf.gz
+
+#Filter SNPs
+bcftools view -i 'MAF>=0.05 && F_MISSING<=0.2' \  soy.snp.bi.tags.vcf.gz -Oz -o soy.snp.bi.filt.vcf.gz
+tabix -p vcf soy.snp.bi.filt.vcf.gz
+#SNPs-3.8m
+#815 samples
+
+
+
+(soy_selection) [ jkitony@10.7.30.227:/data1/jkitony/soybean/selection_sweeps ]$
+
+bcftools query -l soy.snp.bi.filt.vcf.gz > vcf_samples.txt
+bcftools index -t --threads 45 soy.snp.bi.filt.vcf.gz
+###########################################################
+
+nano make_selection_groups.py
+python make_selection_groups.py
+
+#output
+Counts from intersected metadata:
+Ecotype
+Landrace     199
+Wild_type     51
+Cultivar      33
+
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+#!/usr/bin/env python3
+
+import pandas as pd
+
+META = "Meta.csv"
+VCF_SAMPLES = "vcf_samples.txt"
+
+GROUPS = ["Wild_type", "Landrace", "Cultivar"]
+
+def clean(x):
+    if pd.isna(x):
+        return pd.NA
+    x = str(x).strip()
+    if x in {"", "NA", "N/A", "nan", "None", "<NA>"}:
+        return pd.NA
+    return x
+
+def norm_ecotype(x):
+    if pd.isna(x):
+        return pd.NA
+
+    x0 = str(x).strip()
+    key = x0.lower().replace(" ", "_").replace("-", "_")
+
+    fixes = {
+        "wild": "Wild_type",
+        "wild_type": "Wild_type",
+        "g_soja": "Wild_type",
+        "g._soja": "Wild_type",
+        "glycine_soja": "Wild_type",
+        "soja": "Wild_type",
+
+        "landrace": "Landrace",
+        "landraces": "Landrace",
+
+        "cultivar": "Cultivar",
+        "cultivars": "Cultivar",
+        "improved": "Cultivar",
+        "improved_cultivar": "Cultivar",
+        "improved_cultivars": "Cultivar",
+    }
+
+    return fixes.get(key, x0)
+
+try:
+    meta = pd.read_csv(META, encoding="utf-8")
+except UnicodeDecodeError:
+    meta = pd.read_csv(META, encoding="latin1")
+
+meta.columns = meta.columns.str.strip()
+
+meta["Sample"] = meta["Sample"].apply(clean)
+meta["Ecotype"] = meta["Ecotype"].apply(clean).apply(norm_ecotype)
+
+meta = meta.dropna(subset=["Sample", "Ecotype"])
+meta = meta.drop_duplicates(subset=["Sample"])
+
+with open(VCF_SAMPLES) as f:
+    vcf_samples = {line.strip() for line in f if line.strip()}
+
+meta["in_vcf"] = meta["Sample"].isin(vcf_samples)
+
+imp = meta[
+    meta["in_vcf"] &
+    meta["Ecotype"].isin(GROUPS)
+].copy()
+
+for group in GROUPS:
+    samples = imp[imp["Ecotype"] == group]["Sample"].sort_values().tolist()
+
+    outname = f"{group}.txt"
+    with open(outname, "w") as f:
+        for s in samples:
+            f.write(f"{s}\n")
+
+    print(f"{group} in VCF:", len(samples))
+
+imp.to_csv("Selection_samples_in_vcf.tsv", sep="\t", index=False)
+
+print("\nCounts from intersected metadata:")
+print(imp["Ecotype"].value_counts())
+
+print("\nSamples in metadata but not in VCF:")
+print(meta.loc[~meta["in_vcf"], ["Sample", "Ecotype"]].head(20))
+
+print("\nUnrecognized ecotype labels among samples in VCF:")
+print(
+    meta.loc[
+        meta["in_vcf"] & ~meta["Ecotype"].isin(GROUPS),
+        "Ecotype"
+    ].value_counts()
+)
+
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+################################################################################################################
+#install
+singularity build xpclrs.sif docker://tale88/xpclrs:latest
+#Chen et al. 2010 and the XPCLRS preprint.https://doi.org/10.64898/2026.02.27.708459
+###########################################################
+bcftools view --threads 45 -Ob \
+    -o soy.snp.bi.filt.bcf \
+    soy.snp.bi.filt.vcf.gz
+
+bcftools index --threads 45 soy.snp.bi.filt.bcf
+##################################################
+VCF=soy.snp.bi.filt.bcf
+WINDOW=100000
+STEP=10000
+MAXSNPS=250
+MINSNPS=10
+THREADS=45
+###############################################
+#Domestigation
+mkdir -p XPCLRS/domestication
+
+for chr in Chr01 Chr02 Chr03 Chr04 Chr05 Chr06 Chr07 Chr08 Chr09 Chr10 \
+           Chr11 Chr12 Chr13 Chr14 Chr15 Chr16 Chr17 Chr18 Chr19 Chr20
+do
+    singularity exec xpclrs.sif xpclrs \
+        --input ${VCF} \
+        --out XPCLRS/domestication/${chr}.wild_vs_landrace.tsv \
+        --samplesA Wild_type.txt \
+        --samplesB Landrace.txt \
+        --chr ${chr} \
+        --size ${WINDOW} \
+        --step ${STEP} \
+        --maxsnps ${MAXSNPS} \
+        --minsnps ${MINSNPS} \
+        --threads ${THREADS} \
+        --format tsv
+done
+###############################################
+#Improvement
+mkdir -p XPCLRS/improvement
+
+for chr in Chr01 Chr02 Chr03 Chr04 Chr05 Chr06 Chr07 Chr08 Chr09 Chr10 \
+           Chr11 Chr12 Chr13 Chr14 Chr15 Chr16 Chr17 Chr18 Chr19 Chr20
+do
+    singularity exec xpclrs.sif xpclrs \
+        --input ${VCF} \
+        --out XPCLRS/improvement/${chr}.landrace_vs_cultivar.tsv \
+        --samplesA Landrace.txt \
+        --samplesB Cultivar.txt \
+        --chr ${chr} \
+        --size ${WINDOW} \
+        --step ${STEP} \
+        --maxsnps ${MAXSNPS} \
+        --minsnps ${MINSNPS} \
+        --threads ${THREADS} \
+        --format tsv
+done
+#######################################################
+mkdir -p XPCLRS/combined
+
+# Domestication
+awk 'FNR==1 && NR!=1 {next} {print}' XPCLRS/domestication/*.tsv \
+    > XPCLRS/combined/domestication.wild_vs_landrace.all.tsv
+
+# Improvement
+awk 'FNR==1 && NR!=1 {next} {print}' XPCLRS/improvement/*.tsv \
+    > XPCLRS/combined/improvement.landrace_vs_cultivar.all.tsv
+
+head XPCLRS/combined/domestication.wild_vs_landrace.all.tsv
+head XPCLRS/combined/improvement.landrace_vs_cultivar.all.tsv
+
+#################################################################
+plot_xpclr_manhattan.py
+#pc: (xpclr) jkitony@jkitony:/mnt/c/Soybean/XPCLRS$
+python plot_xpclr_manhattan.py \
+    --infile XPCLRS/combined/domestication.wild_vs_landrace.all.tsv \
+    --outfile XPCLRS/combined/domestication_XPCLR_manhattan.png \
+    --title "Domestication XP-CLR: Wild type vs Landrace"
+python plot_xpclr_manhattan.py \
+    --infile XPCLRS/combined/improvement.landrace_vs_cultivar.all.tsv \
+    --outfile XPCLRS/combined/improvement_XPCLR_manhattan.png \
+    --title "Improvement XP-CLR: Landrace vs Cultivar"
+
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+#!/usr/bin/env python3
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+import argparse
+import os
+
+def find_col(df, candidates):
+    cols = {c.lower(): c for c in df.columns}
+    for cand in candidates:
+        if cand.lower() in cols:
+            return cols[cand.lower()]
+    raise ValueError(f"Could not find any of these columns: {candidates}\nAvailable: {list(df.columns)}")
+
+def chr_sort_key(chrom):
+    x = str(chrom).replace("Chr", "").replace("chr", "")
+    try:
+        return int(x)
+    except ValueError:
+        return x
+
+def plot_xpclr(infile, outfile, title):
+    df = pd.read_csv(infile, sep="\t")
+
+    chr_col = find_col(df, ["chr", "chrom", "chromosome", "CHROM"])
+    score_col = find_col(df, ["xpclr", "XPCLR", "score", "XP-CLR", "xpclr_score"])
+
+    # position can vary by output version
+    try:
+        pos_col = find_col(df, ["pos", "position", "POS", "start", "START", "window_start"])
+        df["POS"] = df[pos_col]
+    except ValueError:
+        start_col = find_col(df, ["start", "START", "window_start"])
+        end_col = find_col(df, ["end", "END", "window_end"])
+        df["POS"] = (df[start_col] + df[end_col]) / 2
+
+    df = df[[chr_col, "POS", score_col]].copy()
+    df.columns = ["CHR", "POS", "XPCLR"]
+
+    df = df.dropna()
+    df["CHR"] = df["CHR"].astype(str)
+    df["XPCLR"] = pd.to_numeric(df["XPCLR"], errors="coerce")
+    df["POS"] = pd.to_numeric(df["POS"], errors="coerce")
+    df = df.dropna()
+
+    df = df.sort_values(
+        by=["CHR", "POS"],
+        key=lambda s: s.map(chr_sort_key) if s.name == "CHR" else s
+    )
+
+    # cumulative position
+    chr_offsets = {}
+    offset = 0
+    tick_pos = []
+    tick_lab = []
+
+    plot_dfs = []
+    for chrom in sorted(df["CHR"].unique(), key=chr_sort_key):
+        d = df[df["CHR"] == chrom].copy()
+        d["BPcum"] = d["POS"] + offset
+        chr_offsets[chrom] = offset
+        tick_pos.append(d["BPcum"].median())
+        tick_lab.append(chrom.replace("Chr", ""))
+        offset = d["BPcum"].max()
+        plot_dfs.append(d)
+
+    plot_df = pd.concat(plot_dfs, ignore_index=True)
+
+    threshold_95 = plot_df["XPCLR"].quantile(0.95)
+    threshold_99 = plot_df["XPCLR"].quantile(0.99)
+
+    plt.figure(figsize=(16, 5))
+
+    for i, chrom in enumerate(sorted(plot_df["CHR"].unique(), key=chr_sort_key)):
+        d = plot_df[plot_df["CHR"] == chrom]
+        plt.scatter(
+            d["BPcum"],
+            d["XPCLR"],
+            s=8,
+            alpha=0.75
+        )
+
+    plt.axhline(threshold_95, linestyle="--", linewidth=1, label=f"Top 5% = {threshold_95:.3f}")
+    plt.axhline(threshold_99, linestyle=":", linewidth=1, label=f"Top 1% = {threshold_99:.3f}")
+
+    plt.xticks(tick_pos, tick_lab, fontsize=10)
+    plt.xlabel("Chromosome")
+    plt.ylabel("XP-CLR score")
+    plt.title(title)
+    plt.legend(frameon=False)
+    plt.tight_layout()
+
+    plt.savefig(outfile, dpi=300)
+    plt.close()
+
+    top_out = outfile.replace(".png", ".top5pct.tsv")
+    plot_df[plot_df["XPCLR"] >= threshold_95].to_csv(top_out, sep="\t", index=False)
+
+    print(f"Saved plot: {outfile}")
+    print(f"Saved top 5% windows: {top_out}")
+    print(f"Top 5% threshold: {threshold_95}")
+    print(f"Top 1% threshold: {threshold_99}")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--infile", required=True)
+    parser.add_argument("--outfile", required=True)
+    parser.add_argument("--title", required=True)
+    args = parser.parse_args()
+
+    plot_xpclr(args.infile, args.outfile, args.title)
+
