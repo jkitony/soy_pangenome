@@ -6,7 +6,8 @@ bcftools +fill-tags soy.snp.bi.raw.vcf.gz -Oz -o soy.snp.bi.tags.vcf.gz -- -t MA
 
 #Filter SNPs
 bcftools view -i 'MAF>=0.05 && F_MISSING<=0.2' \  soy.snp.bi.tags.vcf.gz -Oz -o soy.snp.bi.filt.vcf.gztabix -p vcf soy.snp.bi.filt.vcf.gz
-
+#SNPs-3.8m
+#815 samples
 
 
 
