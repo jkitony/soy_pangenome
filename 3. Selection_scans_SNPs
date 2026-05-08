@@ -185,11 +185,11 @@ done
 mkdir -p XPCLRS/combined
 
 # Domestication
-awk 'FNR==1 && NR!=1 {next} {print}' XPCLRS/domestication/*.tsv \
+awk 'FNR==1 && NR!=1 {next} {print}' XPCLRS/domestication/*.xpclr \
     > XPCLRS/combined/domestication.wild_vs_landrace.all.tsv
 
 # Improvement
-awk 'FNR==1 && NR!=1 {next} {print}' XPCLRS/improvement/*.tsv \
+awk 'FNR==1 && NR!=1 {next} {print}' XPCLRS/improvement/*.xpclr \
     > XPCLRS/combined/improvement.landrace_vs_cultivar.all.tsv
 
 head XPCLRS/combined/domestication.wild_vs_landrace.all.tsv
@@ -202,10 +202,23 @@ python plot_xpclr_manhattan.py \
     --infile XPCLRS/combined/domestication.wild_vs_landrace.all.tsv \
     --outfile XPCLRS/combined/domestication_XPCLR_manhattan.png \
     --title "Domestication XP-CLR: Wild type vs Landrace"
+###
+Saved top 5% windows: XPCLRS/combined/domestication_XPCLR_manhattan.top5pct.tsv
+Top 5% threshold: 4.588860578332567
+Top 1% threshold: 24.968453542019606
+####
+
 python plot_xpclr_manhattan.py \
     --infile XPCLRS/combined/improvement.landrace_vs_cultivar.all.tsv \
     --outfile XPCLRS/combined/improvement_XPCLR_manhattan.png \
     --title "Improvement XP-CLR: Landrace vs Cultivar"
+
+###
+Saved top 5% windows: XPCLRS/combined/improvement_XPCLR_manhattan.top5pct.tsv
+Top 5% threshold: 1.066451331158487
+Top 1% threshold: 3.6540382806517337
+
+###
 
 XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 #!/usr/bin/env python3
