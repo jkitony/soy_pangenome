@@ -82,6 +82,7 @@ print("Landrace in VCF:", len(landrace))
 print("\nCounts from intersected metadata:")
 print(imp["Ecotype"].value_counts())
 
+
 ################################################################################################
 mkdir -p selection_CL_vs_LR/{fst,pi,plots,tables,scripts}
 cd selection_CL_vs_LR
