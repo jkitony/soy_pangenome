@@ -453,6 +453,7 @@ echo "Done."
 
 
 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
-
-
-    plot_xpclr(args.infile, args.outfile, args.title)
+mamba create -n eggnog_new -c bioconda -c conda-forge eggnog-mapper -y
+mamba activate eggnog_new
+mkdir -p /data1/jkitony/eggnog_db
+download_eggnog_data.py --data_dir /data1/jkitony/eggnog_db
