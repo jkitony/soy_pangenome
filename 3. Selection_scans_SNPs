@@ -453,7 +453,54 @@ echo "Done."
 
 
 yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
-mamba create -n eggnog_new -c bioconda -c conda-forge eggnog-mapper -y
-mamba activate eggnog_new
-mkdir -p /data1/jkitony/eggnog_db
-download_eggnog_data.py --data_dir /data1/jkitony/eggnog_db
+#Egg_nog
+mamba activate eggnog_env
+EGGNOG_DB=/data1/jkitony/Baobab/eggnog/eggnog-mapper/eggnog_data
+mkdir -p eggnog_results/domestication eggnog_results/improvement
+mkdir -p eggnog_results/domestication eggnog_results/domestication
+#Run domestication:
+emapper.py \
+    -i XPCLRS/annotation/domestication.top1.proteins.one_isoform.fa \
+    --itype proteins \
+    --output domestication_top1 \
+    --output_dir eggnog_results/domestication \
+    --data_dir ${EGGNOG_DB} \
+    --cpu 45
+
+#Run improvement:
+#screen -S improvement
+#screen -ls
+#ctrl + A ; ctrl + D
+#ctrl + r
+#mamba activate eggnog_env
+#cd /data1/jkitony/soybean/SNPs_selection_scan ]
+EGGNOG_DB=/data1/jkitony/Baobab/eggnog/eggnog-mapper/eggnog_data
+emapper.py \
+    -i XPCLRS/annotation/improvement.top1.proteins.one_isoform.fa \
+    --itype proteins \
+    --output improvement_top1 \
+    --output_dir eggnog_results/improvement \
+    --data_dir ${EGGNOG_DB} \
+    --cpu 45
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
