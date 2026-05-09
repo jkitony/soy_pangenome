@@ -484,7 +484,90 @@ emapper.py \
     --cpu 45
 
 
+###########################################################################
+###########################################################################
+Supplemenatry TABLE python make_xpclr_function_table.py
+##########################################################################
+cat > make_xpclr_function_table.py << 'EOF'
+#!/usr/bin/env python3
 
+import pandas as pd
+import re
+
+files = {
+    "Domestication": "eggnog_results/domestication/domestication_top1.emapper.annotations",
+    "Improvement": "eggnog_results/improvement/improvement_top1.emapper.annotations",
+}
+
+def get_locus(query):
+    m = re.search(r"locus=([A-Za-z0-9.]+)", query)
+    if m:
+        return m.group(1)
+    return query.split()[0].split(".")[0]
+
+tables = []
+
+for sweep_type, path in files.items():
+    df = pd.read_csv(path, sep="\t", comment="#", header=None)
+
+    header = None
+    with open(path) as f:
+        for line in f:
+            if line.startswith("#query"):
+                header = line.strip().lstrip("#").split("\t")
+                break
+
+    if header is not None and len(header) == df.shape[1]:
+        df.columns = header
+
+    keep = {
+        "query": "Protein_ID",
+        "Description": "Description",
+        "GOs": "GO_terms",
+        "PFAMs": "Pfam_domain",
+        "KEGG_Pathway": "KEGG_pathway",
+        "KEGG_ko": "KEGG_ortholog",
+        "COG_category": "COG_category",
+        "Preferred_name": "Preferred_name",
+    }
+
+    available = [c for c in keep if c in df.columns]
+    out = df[available].copy()
+    out = out.rename(columns=keep)
+
+    if "Protein_ID" in out.columns:
+        out["Gene_ID"] = out["Protein_ID"].astype(str).str.extract(r"(Glyma\.\d+G\d+)")
+    else:
+        out["Gene_ID"] = ""
+
+    out["Sweep_type"] = sweep_type
+    tables.append(out)
+
+final = pd.concat(tables, ignore_index=True)
+
+cols = [
+    "Gene_ID",
+    "Protein_ID",
+    "Preferred_name",
+    "Description",
+    "GO_terms",
+    "Pfam_domain",
+    "KEGG_pathway",
+    "KEGG_ortholog",
+    "COG_category",
+    "Sweep_type",
+]
+
+cols = [c for c in cols if c in final.columns]
+final = final[cols]
+
+final.to_csv("XPCLRS/annotation/xpclr_top1_functional_annotation_table.tsv", sep="\t", index=False)
+
+print(final.head())
+print("\nSaved: XPCLRS/annotation/xpclr_top1_functional_annotation_table.tsv")
+print("\nCounts by sweep type:")
+print(final["Sweep_type"].value_counts())
+EOF
 
 
 
