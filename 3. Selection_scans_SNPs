@@ -17,12 +17,12 @@ tabix -p vcf soy.snp.bi.filt.vcf.gz
 
 bcftools query -l soy.snp.bi.filt.vcf.gz > vcf_samples.txt
 bcftools index -t --threads 45 soy.snp.bi.filt.vcf.gz
-###########################################################
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+################################################################################################################
+
 #install
 singularity build xpclrs.sif docker://tale88/xpclrs:latest
 #Chen et al. 2010 and the XPCLRS preprint.https://doi.org/10.64898/2026.02.27.708459
-###############################################################################################################
-
 
 nano make_selection_groups.py
 python make_selection_groups.py
@@ -33,8 +33,8 @@ Ecotype
 Landrace     199
 Wild_type     51
 Cultivar      33
-
 XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+################################################################################################################
 #nano plot_xpclr_manhattan.py
 ##################################
 #!/usr/bin/env python3
@@ -156,9 +156,6 @@ if __name__ == "__main__":
 
 XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 ################################################################################################################
-
-###############################################################################################################
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 #1. Main XPCLRS workflow script
 chmod +x run_xpclrs_pipeline.sh
 ./run_xpclrs_pipeline.sh
@@ -180,6 +177,8 @@ XPCLRS/annotation/improvement.top1.gene_ids.txt
 XPCLRS/annotation/shared_domestication_improvement.top1.genes.txt
 
 XPCLRS/annotation/xpclr_top1_summary.tsv
+###############################################################################################################
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 ################################################################################################################
 #!/usr/bin/env bash
 set -euo pipefail
