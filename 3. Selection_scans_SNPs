@@ -372,503 +372,87 @@ python plot_xpclr_manhattan.py \
 YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY
 XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 ################################################################################################################
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-################################################################################################################
-###########################################################
-bcftools view --threads 45 -Ob \
-    -o soy.snp.bi.filt.bcf \
-    soy.snp.bi.filt.vcf.gz
+#GO analysis
+ chmod +x extract_top1_sweep_proteins.sh
+./extract_top1_sweep_proteins.sh
+yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
+#!/usr/bin/env bash
+set -euo pipefail
 
-bcftools index --threads 45 soy.snp.bi.filt.bcf
-##################################################
-VCF=soy.snp.bi.filt.bcf
-WINDOW=100000
-STEP=10000
-MAXSNPS=250
-MINSNPS=10
-THREADS=45
-###############################################
-#Domestigation
-mkdir -p XPCLRS/domestication
+PROTEIN_FA="Gmax_880_Wm82.a6.v1.protein.fa"
+ANN_DIR="XPCLRS/annotation"
 
-for chr in Chr01 Chr02 Chr03 Chr04 Chr05 Chr06 Chr07 Chr08 Chr09 Chr10 \
-           Chr11 Chr12 Chr13 Chr14 Chr15 Chr16 Chr17 Chr18 Chr19 Chr20
+for scan in domestication improvement
 do
-    singularity exec xpclrs.sif xpclrs \
-        --input ${VCF} \
-        --out XPCLRS/domestication/${chr}.wild_vs_landrace.tsv \
-        --samplesA Wild_type.txt \
-        --samplesB Landrace.txt \
-        --chr ${chr} \
-        --size ${WINDOW} \
-        --step ${STEP} \
-        --maxsnps ${MAXSNPS} \
-        --minsnps ${MINSNPS} \
-        --threads ${THREADS} \
-        --format tsv
+    echo "Processing ${scan}..."
+
+    GENE_IDS="${ANN_DIR}/${scan}.top1.gene_ids.txt"
+    LOCUS_IDS="${ANN_DIR}/${scan}.top1.locus_ids.txt"
+    PATTERNS="${ANN_DIR}/${scan}.top1.seqkit_patterns.txt"
+    ALL_PROTEINS="${ANN_DIR}/${scan}.top1.proteins.all_isoforms.fa"
+    ONE_ISOFORM="${ANN_DIR}/${scan}.top1.proteins.one_isoform.fa"
+
+    # 1. Convert Glyma.01G023300.Wm82.a6.v1 -> Glyma.01G023300
+    sed 's/\.Wm82\.a6\.v1$//' "${GENE_IDS}" | sort -u > "${LOCUS_IDS}"
+
+    # 2. Make seqkit regex patterns matching FASTA header field: locus=Glyma.01G023300
+    awk '{print "locus="$1}' "${LOCUS_IDS}" > "${PATTERNS}"
+
+    # 3. Extract all protein isoforms for selected loci
+    seqkit grep -n -r -f "${PATTERNS}" "${PROTEIN_FA}" > "${ALL_PROTEINS}"
+
+    # 4. Keep only one isoform per locus
+    python - "${ALL_PROTEINS}" "${ONE_ISOFORM}" << 'PY'
+import sys
+
+infile = sys.argv[1]
+outfile = sys.argv[2]
+
+seen = set()
+write = False
+
+with open(infile) as fin, open(outfile, "w") as fout:
+    for line in fin:
+        if line.startswith(">"):
+            header = line.strip()
+            locus = None
+
+            for field in header.split():
+                if field.startswith("locus="):
+                    locus = field.replace("locus=", "")
+                    break
+
+            if locus is None:
+                write = False
+                continue
+
+            if locus in seen:
+                write = False
+            else:
+                seen.add(locus)
+                write = True
+                fout.write(line)
+        else:
+            if write:
+                fout.write(line)
+PY
+
+    echo "${scan} loci:"
+    wc -l "${LOCUS_IDS}"
+
+    echo "${scan} all isoform proteins:"
+    grep -c "^>" "${ALL_PROTEINS}" || true
+
+    echo "${scan} one isoform proteins:"
+    grep -c "^>" "${ONE_ISOFORM}" || true
+
+    echo
 done
-###############################################
-#Improvement
-mkdir -p XPCLRS/improvement
 
-for chr in Chr01 Chr02 Chr03 Chr04 Chr05 Chr06 Chr07 Chr08 Chr09 Chr10 \
-           Chr11 Chr12 Chr13 Chr14 Chr15 Chr16 Chr17 Chr18 Chr19 Chr20
-do
-    singularity exec xpclrs.sif xpclrs \
-        --input ${VCF} \
-        --out XPCLRS/improvement/${chr}.landrace_vs_cultivar.tsv \
-        --samplesA Landrace.txt \
-        --samplesB Cultivar.txt \
-        --chr ${chr} \
-        --size ${WINDOW} \
-        --step ${STEP} \
-        --maxsnps ${MAXSNPS} \
-        --minsnps ${MINSNPS} \
-        --threads ${THREADS} \
-        --format tsv
-done
-#######################################################
-mkdir -p XPCLRS/combined
+echo "Done."
 
-# Domestication
-awk 'FNR==1 && NR!=1 {next} {print}' \
-XPCLRS/domestication/*.xpclr \
-> XPCLRS/combined/domestication.full.tsv
 
+yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
 
-
-# Improvement
-awk 'FNR==1 && NR!=1 {next} {print}' \
-XPCLRS/improvement/*.xpclr \
-> XPCLRS/combined/improvement.full.tsv
-
-head XPCLRS/combined/domestication.full.tsv
-head XPCLRS/combined/improvement.full.tsv
-
-#################################################################
-plot_xpclr_manhattan.py
-#pc: (xpclr) jkitony@jkitony:/mnt/c/Soybean/XPCLRS$
-python plot_xpclr_manhattan.py \
-    --infile XPCLRS/combined/domestication.full.tsv \
-    --outfile XPCLRS/combined/domestication_XPCLR_manhattan.png \
-    --title "Domestication XP-CLR: Wild type vs Landrace"
-###
-Saved top 5% windows: XPCLRS/combined/domestication_XPCLR_manhattan.top5pct.tsv
-Top 5% threshold: 4.588860578332567
-Top 1% threshold: 24.968453542019606
-####
-
-python plot_xpclr_manhattan.py \
-    --infile XPCLRS/combined/improvement.full.tsv \
-    --outfile XPCLRS/combined/improvement_XPCLR_manhattan.png \
-    --title "Improvement XP-CLR: Landrace vs Cultivar"
-
-###
-Saved top 5% windows: XPCLRS/combined/improvement_XPCLR_manhattan.top5pct.tsv
-Top 5% threshold: 1.066451331158487
-Top 1% threshold: 3.6540382806517337
-
-###
-
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-#!/usr/bin/env python3
-
-import pandas as pd
-import matplotlib.pyplot as plt
-import numpy as np
-import argparse
-import os
-
-def find_col(df, candidates):
-    cols = {c.lower(): c for c in df.columns}
-    for cand in candidates:
-        if cand.lower() in cols:
-            return cols[cand.lower()]
-    raise ValueError(f"Could not find any of these columns: {candidates}\nAvailable: {list(df.columns)}")
-
-def chr_sort_key(chrom):
-    x = str(chrom).replace("Chr", "").replace("chr", "")
-    try:
-        return int(x)
-    except ValueError:
-        return x
-
-def plot_xpclr(infile, outfile, title):
-    df = pd.read_csv(infile, sep="\t")
-
-    chr_col = find_col(df, ["chr", "chrom", "chromosome", "CHROM"])
-    score_col = find_col(df, ["xpclr", "XPCLR", "score", "XP-CLR", "xpclr_score"])
-
-    # position can vary by output version
-    try:
-        pos_col = find_col(df, ["pos", "position", "POS", "start", "START", "window_start"])
-        df["POS"] = df[pos_col]
-    except ValueError:
-        start_col = find_col(df, ["start", "START", "window_start"])
-        end_col = find_col(df, ["end", "END", "window_end"])
-        df["POS"] = (df[start_col] + df[end_col]) / 2
-
-    df = df[[chr_col, "POS", score_col]].copy()
-    df.columns = ["CHR", "POS", "XPCLR"]
-
-    df = df.dropna()
-    df["CHR"] = df["CHR"].astype(str)
-    df["XPCLR"] = pd.to_numeric(df["XPCLR"], errors="coerce")
-    df["POS"] = pd.to_numeric(df["POS"], errors="coerce")
-    df = df.dropna()
-
-    df = df.sort_values(
-        by=["CHR", "POS"],
-        key=lambda s: s.map(chr_sort_key) if s.name == "CHR" else s
-    )
-
-    # cumulative position
-    chr_offsets = {}
-    offset = 0
-    tick_pos = []
-    tick_lab = []
-
-    plot_dfs = []
-    for chrom in sorted(df["CHR"].unique(), key=chr_sort_key):
-        d = df[df["CHR"] == chrom].copy()
-        d["BPcum"] = d["POS"] + offset
-        chr_offsets[chrom] = offset
-        tick_pos.append(d["BPcum"].median())
-        tick_lab.append(chrom.replace("Chr", ""))
-        offset = d["BPcum"].max()
-        plot_dfs.append(d)
-
-    plot_df = pd.concat(plot_dfs, ignore_index=True)
-
-    threshold_95 = plot_df["XPCLR"].quantile(0.95)
-    threshold_99 = plot_df["XPCLR"].quantile(0.99)
-
-    plt.figure(figsize=(16, 5))
-
-    for i, chrom in enumerate(sorted(plot_df["CHR"].unique(), key=chr_sort_key)):
-        d = plot_df[plot_df["CHR"] == chrom]
-        plt.scatter(
-            d["BPcum"],
-            d["XPCLR"],
-            s=8,
-            alpha=0.75
-        )
-
-    plt.axhline(threshold_95, linestyle="--", linewidth=1, label=f"Top 5% = {threshold_95:.3f}")
-    plt.axhline(threshold_99, linestyle=":", linewidth=1, label=f"Top 1% = {threshold_99:.3f}")
-
-    plt.xticks(tick_pos, tick_lab, fontsize=10)
-    plt.xlabel("Chromosome")
-    plt.ylabel("XP-CLR score")
-    plt.title(title)
-    plt.legend(frameon=False)
-    plt.tight_layout()
-
-    plt.savefig(outfile, dpi=300)
-    plt.close()
-
-    top_out = outfile.replace(".png", ".top5pct.tsv")
-    plot_df[plot_df["XPCLR"] >= threshold_95].to_csv(top_out, sep="\t", index=False)
-
-    print(f"Saved plot: {outfile}")
-    print(f"Saved top 5% windows: {top_out}")
-    print(f"Top 5% threshold: {threshold_95}")
-    print(f"Top 1% threshold: {threshold_99}")
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--infile", required=True)
-    parser.add_argument("--outfile", required=True)
-    parser.add_argument("--title", required=True)
-    args = parser.parse_args()
-
-    plot_xpclr(args.infile, args.outfile, args.title)
-
-#############################################################################################
-#Annotation
-python - << 'EOF'
-import pandas as pd
-
-df = pd.read_csv(
-    "XPCLRS/combined/domestication.full.tsv",
-    sep="\t"
-)
-
-thr = df["xpclr"].quantile(0.95)
-
-print("Top5 threshold =", thr)
-
-df[df["xpclr"] >= thr].to_csv(
-    "XPCLRS/combined/domestication.top5.full.tsv",
-    sep="\t",
-    index=False
-)
-EOF
-
-
-####################################################
-awk 'BEGIN{OFS="\t"}
-NR>1{
-    print $1,$2,$3,$11
-}' XPCLRS/combined/domestication.top5.full.tsv \
-> domestication.top5.bed
-
-#Important -collapse nearby windows
-bedtools sort -i domestication.top5.bed | \
-bedtools merge -d 50000 -c 4 -o max \
-> domestication.top5.merged.bed
-#standardize with gff3
-awk 'BEGIN{OFS="\t"}
-{
-    chr=$1
-    gsub("Chr","Gm",chr)
-    print chr,$2,$3,$4
-}' domestication.top5.merged.bed > domestication.top5.merged.GFFchr.bed
-######################
-#intersect with genes
-awk '$3=="gene"' Gmax_880_Wm82.a6.v1.gene.gff3 > soybean.genes.gff3
-
-#intersect
-bedtools intersect \
-    -a soybean.genes.gff3 \
-    -b domestication.top5.merged.GFFchr.bed \
-    -wa -wb \
-> domestication_selected_genes.tsv
-
-
-###
-#Get IDs
-grep -o "Glyma[^;]*" domestication_selected_genes.tsv | \
-cut -d'=' -f2 | \
-sort -u \
-> domestication_gene_ids.txt
-
-#########################
-#########################
-python - << 'EOF'
-import pandas as pd
-
-df = pd.read_csv(
-    "XPCLRS/combined/improvement.full.tsv",
-    sep="\t"
-)
-
-thr = df["xpclr"].quantile(0.95)
-
-print("Top5 threshold =", thr)
-
-df[df["xpclr"] >= thr].to_csv(
-    "XPCLRS/combined/improvement.top5.full.tsv",
-    sep="\t",
-    index=False
-)
-EOF
-
-
-awk 'BEGIN{OFS="\t"}
-NR>1{
-    print $1,$2,$3,$11
-}' XPCLRS/combined/improvement.top5.full.tsv \
-> improvement.top5.bed
-
-#Important -collapse nearby windows
-bedtools sort -i improvement.top5.bed | \
-bedtools merge -d 50000 -c 4 -o max \
-> improvement.top5.merged.bed
-#standardize with gff3
-awk 'BEGIN{OFS="\t"}
-{
-    chr=$1
-    gsub("Chr","Gm",chr)
-    print chr,$2,$3,$4
-}' improvement.top5.merged.bed > improvement.top5.merged.GFFchr.bed
-######################
-#intersect with genes
-awk '$3=="gene"' Gmax_880_Wm82.a6.v1.gene.gff3 > soybean.genes.gff3
-
-#intersect
-bedtools intersect \
-    -a soybean.genes.gff3 \
-    -b improvement.top5.merged.GFFchr.bed \
-    -wa -wb \
-> improvement_selected_genes.tsv
-
-
-###
-#Get IDs
-grep -o "Glyma[^;]*" improvement_selected_genes.tsv | \
-cut -d'=' -f2 | \
-sort -u \
-> improvement_gene_ids.txt
-################################################################################
-wc -l domestication_gene_ids.txt improvement_gene_ids.txt
-#
- 46392 domestication_gene_ids.txt
-  50559 improvement_gene_ids.txt
-  96951 total
-
-
-wc -l domestication_selected_genes.tsv improvement_selected_genes.tsv
-#
-  15796 domestication_selected_genes.tsv
-  17222 improvement_selected_genes.tsv
-  33018 total
-
-wc -l domestication.top5.merged.bed improvement.top5.merged.bed
-#
-  1522 domestication.top5.merged.bed
-  1848 improvement.top5.merged.bed
-  3370 total
-###############
-#shared
-comm -12 \
-    <(sort domestication_gene_ids.txt) \
-    <(sort improvement_gene_ids.txt) \
-> shared_domestication_improvement_genes.txt
-
-wc -l shared_domestication_improvement_genes.txt
-16135 
-##############################################################
-#Clean
-awk -F'\t' '
-{
-    split($9,a,";")
-    for(i in a){
-        if(a[i] ~ /^ID=/){
-            gsub("ID=","",a[i])
-            print a[i]
-        }
-    }
-}' domestication_selected_genes.tsv | \
-sort -u > domestication_gene_ids.clean.txt
-########
-awk -F'\t' '
-{
-    split($9,a,";")
-    for(i in a){
-        if(a[i] ~ /^ID=/){
-            gsub("ID=","",a[i])
-            print a[i]
-        }
-    }
-}' improvement_selected_genes.tsv | \
-sort -u > improvement_gene_ids.clean.txt
-
-###############
-(base) [ jkitony@10.7.30.227:/data1/jkitony/soybean/SNPs_selection_scan ]$ wc -l domestication_gene_ids.clean.txt
-15796 domestication_gene_ids.clean.txt
-(base) [ jkitony@10.7.30.227:/data1/jkitony/soybean/SNPs_selection_scan ]$ wc -l improvement_gene_ids.clean.txt
-17222 improvement_gene_ids.clean.txt
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-#!/usr/bin/env python3
-
-import pandas as pd
-import matplotlib.pyplot as plt
-import numpy as np
-import argparse
-import os
-
-def find_col(df, candidates):
-    cols = {c.lower(): c for c in df.columns}
-    for cand in candidates:
-        if cand.lower() in cols:
-            return cols[cand.lower()]
-    raise ValueError(f"Could not find any of these columns: {candidates}\nAvailable: {list(df.columns)}")
-
-def chr_sort_key(chrom):
-    x = str(chrom).replace("Chr", "").replace("chr", "")
-    try:
-        return int(x)
-    except ValueError:
-        return x
-
-def plot_xpclr(infile, outfile, title):
-    df = pd.read_csv(infile, sep="\t")
-
-    chr_col = find_col(df, ["chr", "chrom", "chromosome", "CHROM"])
-    score_col = find_col(df, ["xpclr", "XPCLR", "score", "XP-CLR", "xpclr_score"])
-
-    # position can vary by output version
-    try:
-        pos_col = find_col(df, ["pos", "position", "POS", "start", "START", "window_start"])
-        df["POS"] = df[pos_col]
-    except ValueError:
-        start_col = find_col(df, ["start", "START", "window_start"])
-        end_col = find_col(df, ["end", "END", "window_end"])
-        df["POS"] = (df[start_col] + df[end_col]) / 2
-
-    df = df[[chr_col, "POS", score_col]].copy()
-    df.columns = ["CHR", "POS", "XPCLR"]
-
-    df = df.dropna()
-    df["CHR"] = df["CHR"].astype(str)
-    df["XPCLR"] = pd.to_numeric(df["XPCLR"], errors="coerce")
-    df["POS"] = pd.to_numeric(df["POS"], errors="coerce")
-    df = df.dropna()
-
-    df = df.sort_values(
-        by=["CHR", "POS"],
-        key=lambda s: s.map(chr_sort_key) if s.name == "CHR" else s
-    )
-
-    # cumulative position
-    chr_offsets = {}
-    offset = 0
-    tick_pos = []
-    tick_lab = []
-
-    plot_dfs = []
-    for chrom in sorted(df["CHR"].unique(), key=chr_sort_key):
-        d = df[df["CHR"] == chrom].copy()
-        d["BPcum"] = d["POS"] + offset
-        chr_offsets[chrom] = offset
-        tick_pos.append(d["BPcum"].median())
-        tick_lab.append(chrom.replace("Chr", ""))
-        offset = d["BPcum"].max()
-        plot_dfs.append(d)
-
-    plot_df = pd.concat(plot_dfs, ignore_index=True)
-
-    threshold_95 = plot_df["XPCLR"].quantile(0.95)
-    threshold_99 = plot_df["XPCLR"].quantile(0.99)
-
-    plt.figure(figsize=(16, 5))
-
-    for i, chrom in enumerate(sorted(plot_df["CHR"].unique(), key=chr_sort_key)):
-        d = plot_df[plot_df["CHR"] == chrom]
-        plt.scatter(
-            d["BPcum"],
-            d["XPCLR"],
-            s=8,
-            alpha=0.75
-        )
-
-    plt.axhline(threshold_95, linestyle="--", linewidth=1, label=f"Top 5% = {threshold_95:.3f}")
-    plt.axhline(threshold_99, linestyle=":", linewidth=1, label=f"Top 1% = {threshold_99:.3f}")
-
-    plt.xticks(tick_pos, tick_lab, fontsize=10)
-    plt.xlabel("Chromosome")
-    plt.ylabel("XP-CLR score")
-    plt.title(title)
-    plt.legend(frameon=False)
-    plt.tight_layout()
-
-    plt.savefig(outfile, dpi=300)
-    plt.close()
-
-    top_out = outfile.replace(".png", ".top5pct.tsv")
-    plot_df[plot_df["XPCLR"] >= threshold_95].to_csv(top_out, sep="\t", index=False)
-
-    print(f"Saved plot: {outfile}")
-    print(f"Saved top 5% windows: {top_out}")
-    print(f"Top 5% threshold: {threshold_95}")
-    print(f"Top 1% threshold: {threshold_99}")
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--infile", required=True)
-    parser.add_argument("--outfile", required=True)
-    parser.add_argument("--title", required=True)
-    args = parser.parse_args()
 
     plot_xpclr(args.infile, args.outfile, args.title)
