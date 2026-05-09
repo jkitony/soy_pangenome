@@ -486,7 +486,12 @@ emapper.py \
 
 ###########################################################################
 ###########################################################################
-Supplemenatry TABLE python make_xpclr_function_table.py
+conda deactivate the eggnog_env 
+Supplemenatry TABLE : python make_xpclr_function_table.py
+
+###output
+Domestication genes annotated by eggNOG: 3,928 / 4,070
+Improvement genes annotated by eggNOG: 4,178 / 4,348
 ##########################################################################
 cat > make_xpclr_function_table.py << 'EOF'
 #!/usr/bin/env python3
@@ -572,8 +577,204 @@ EOF
 
 
 
+########################
+#Plot
+python plot_xpclr_function_summary.py
+######################
+cat > plot_xpclr_function_summary.py << 'EOF'
+#!/usr/bin/env python3
+
+import pandas as pd
+import matplotlib.pyplot as plt
+from collections import Counter
+
+df = pd.read_csv("XPCLRS/annotation/xpclr_top1_functional_annotation_table.tsv", sep="\t")
+
+def explode_count(data, column):
+    vals = []
+    for x in data[column].dropna():
+        if x == "-" or x == "":
+            continue
+        vals.extend([v.strip() for v in str(x).split(",") if v.strip() and v.strip() != "-"])
+    return Counter(vals)
+
+def barplot(counter, title, outfile, topn=20):
+    items = counter.most_common(topn)
+    labels = [x[0] for x in items][::-1]
+    values = [x[1] for x in items][::-1]
+
+    plt.figure(figsize=(8, 6))
+    plt.barh(labels, values)
+    plt.xlabel("Number of genes")
+    plt.title(title)
+    plt.tight_layout()
+    plt.savefig(outfile, dpi=300)
+    plt.savefig(outfile.replace(".png", ".pdf"))
+    plt.close()
+
+for sweep in ["Domestication", "Improvement"]:
+    sub = df[df["Sweep_type"] == sweep]
+
+    pfam = explode_count(sub, "Pfam_domain")
+    kegg = explode_count(sub, "KEGG_pathway")
+    cog = explode_count(sub, "COG_category")
+
+    barplot(pfam, f"Top Pfam domains in {sweep} sweep genes",
+            f"XPCLRS/annotation/{sweep.lower()}_top_pfam.png")
+
+    barplot(kegg, f"Top KEGG pathways in {sweep} sweep genes",
+            f"XPCLRS/annotation/{sweep.lower()}_top_kegg.png")
+
+    barplot(cog, f"Top COG categories in {sweep} sweep genes",
+            f"XPCLRS/annotation/{sweep.lower()}_top_cog.png")
+
+print("Done.")
+EOF
 
 
+#################################
+#keywords
+grep -Ei "MADS|flower|FT|circadian|dormancy|seed|shatter|dehisc|cell wall|auxin|gibberellin|ABA|bHLH|MYB|NAC|AP2|ERF|P450" \
+XPCLRS/annotation/xpclr_top1_functional_annotation_table.tsv \
+> XPCLRS/annotation/candidate_domestication_improvement_keywords.tsv
+#################################
+GO enrichment
+go_enrichment_xpclr.py
+XPCLRS/annotation/domestication_GO_enrichment.tsv
+XPCLRS/annotation/improvement_GO_enrichment.tsv
+
+XPCLRS/annotation/domestication_GO_enrichment_bubble.png
+XPCLRS/annotation/domestication_GO_enrichment_bubble.pdf
+
+XPCLRS/annotation/improvement_GO_enrichment_bubble.png
+XPCLRS/annotation/improvement_GO_enrichment_bubble.pdf
+###############################
+#!/usr/bin/env python3
+
+import pandas as pd
+import numpy as np
+from scipy.stats import fisher_exact
+from statsmodels.stats.multitest import multipletests
+import matplotlib.pyplot as plt
+from collections import defaultdict
+
+ANNOT = "XPCLRS/annotation/xpclr_top1_functional_annotation_table.tsv"
+
+OUTDIR = "XPCLRS/annotation"
+
+df = pd.read_csv(ANNOT, sep="\t")
+
+# remove missing GO rows
+df = df[df["GO_terms"].notna()]
+df = df[df["GO_terms"] != "-"]
+
+def parse_go(x):
+    return set([g.strip() for g in str(x).split(",") if g.startswith("GO:")])
+
+df["GO_set"] = df["GO_terms"].apply(parse_go)
+
+# background = all genes annotated by eggNOG in your XP-CLR candidate universe
+# For stronger formal enrichment later, use all soybean genes as background.
+background_genes = set(df["Gene_ID"])
+go_to_bg_genes = defaultdict(set)
+
+for _, row in df.iterrows():
+    gene = row["Gene_ID"]
+    for go in row["GO_set"]:
+        go_to_bg_genes[go].add(gene)
+
+def run_enrichment(sweep_type):
+    selected = set(df.loc[df["Sweep_type"] == sweep_type, "Gene_ID"])
+    bg = background_genes
+
+    rows = []
+
+    for go, go_genes in go_to_bg_genes.items():
+        a = len(selected & go_genes)
+        b = len(selected - go_genes)
+        c = len((bg - selected) & go_genes)
+        d = len((bg - selected) - go_genes)
+
+        if a < 2:
+            continue
+
+        odds, p = fisher_exact([[a, b], [c, d]], alternative="greater")
+
+        rows.append({
+            "GO": go,
+            "Selected_with_GO": a,
+            "Selected_total": len(selected),
+            "Background_with_GO": len(go_genes),
+            "Background_total": len(bg),
+            "Odds_ratio": odds,
+            "P_value": p,
+            "Gene_ratio": a / len(selected),
+            "Bg_ratio": len(go_genes) / len(bg),
+            "Sweep_type": sweep_type
+        })
+
+    res = pd.DataFrame(rows)
+
+    if len(res) == 0:
+        return res
+
+    res["FDR"] = multipletests(res["P_value"], method="fdr_bh")[1]
+    res["minus_log10_FDR"] = -np.log10(res["FDR"].replace(0, np.nextafter(0, 1)))
+
+    res = res.sort_values(["FDR", "P_value"])
+
+    return res
+
+def bubble_plot(res, sweep_type, outfile, topn=20):
+    plot_df = res[res["FDR"] < 0.05].copy()
+
+    if plot_df.empty:
+        plot_df = res.head(topn).copy()
+    else:
+        plot_df = plot_df.head(topn).copy()
+
+    plot_df = plot_df.sort_values("minus_log10_FDR")
+
+    plt.figure(figsize=(9, 7))
+    plt.scatter(
+        plot_df["Gene_ratio"],
+        plot_df["GO"],
+        s=plot_df["Selected_with_GO"] * 15,
+        alpha=0.75
+    )
+
+    plt.xlabel("Gene ratio")
+    plt.ylabel("GO term")
+    plt.title(f"GO enrichment: {sweep_type} sweep genes")
+
+    for i, row in plot_df.iterrows():
+        plt.text(
+            row["Gene_ratio"],
+            row["GO"],
+            f"  n={row['Selected_with_GO']}",
+            va="center",
+            fontsize=8
+        )
+
+    plt.tight_layout()
+    plt.savefig(outfile, dpi=300)
+    plt.savefig(outfile.replace(".png", ".pdf"))
+    plt.close()
+
+for sweep in ["Domestication", "Improvement"]:
+    res = run_enrichment(sweep)
+
+    out_table = f"{OUTDIR}/{sweep.lower()}_GO_enrichment.tsv"
+    res.to_csv(out_table, sep="\t", index=False)
+
+    bubble_plot(
+        res,
+        sweep,
+        f"{OUTDIR}/{sweep.lower()}_GO_enrichment_bubble.png"
+    )
+
+    print(f"{sweep}: saved {out_table}")
+    print(res.head(10)[["GO", "Selected_with_GO", "Odds_ratio", "P_value", "FDR"]])
 
 
 
