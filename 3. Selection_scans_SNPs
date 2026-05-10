@@ -777,6 +777,147 @@ for sweep in ["Domestication", "Improvement"]:
     print(res.head(10)[["GO", "Selected_with_GO", "Odds_ratio", "P_value", "FDR"]])
 
 
+#################################################################################################
+#################################################################################################
+#Add names intuitives
+
+
+mamba activate goatools_env
+mamba install -c conda-forge -c bioconda goatools pandas -y
+wget http://purl.obolibrary.org/obo/go/go-basic.obo
+
+#python add_go_descriptions.py
+################################################################################################
+mamba create -n goatools_env python=3.11 -y
+#############################################################
+#!/usr/bin/env python3
+
+import pandas as pd
+from goatools.obo_parser import GODag
+
+GO_OBO = "go-basic.obo"
+IN_DIR = "XPCLRS/annotation"
+
+go = GODag(GO_OBO)
+
+files = {
+    "domestication": f"{IN_DIR}/domestication_GO_enrichment.tsv",
+    "improvement": f"{IN_DIR}/improvement_GO_enrichment.tsv",
+}
+
+def go_category_namespace(ns):
+    if ns == "biological_process":
+        return "BP"
+    if ns == "molecular_function":
+        return "MF"
+    if ns == "cellular_component":
+        return "CC"
+    return ns
+
+def interpret_go(term_name):
+    t = term_name.lower()
+
+    if any(x in t for x in ["flower", "floral", "photoperiod", "circadian"]):
+        return "Flowering time, maturity, and adaptation to cultivation environments"
+
+    if any(x in t for x in ["seed", "embryo", "germination", "dormancy"]):
+        return "Seed development, dormancy, and domestication-related seed traits"
+
+    if any(x in t for x in ["cell wall", "lignin", "cellulose", "pectin", "xylan"]):
+        return "Cell wall modification related to pod shattering, architecture, and structural adaptation"
+
+    if any(x in t for x in ["abscission", "dehiscence", "shatter"]):
+        return "Pod dehiscence and shattering-related domestication traits"
+
+    if any(x in t for x in ["auxin", "gibberellin", "abscisic acid", "ethylene", "cytokinin", "jasmonic", "salicylic"]):
+        return "Hormone signaling linked to development, stress response, and agronomic adaptation"
+
+    if any(x in t for x in ["defense", "immune", "pathogen", "disease", "hypersensitive"]):
+        return "Disease resistance and immune response under breeding selection"
+
+    if any(x in t for x in ["oxidative", "redox", "oxidoreductase", "reactive oxygen"]):
+        return "Oxidative stress response and redox homeostasis"
+
+    if any(x in t for x in ["abiotic", "drought", "salt", "salinity", "heat", "cold", "temperature", "water"]):
+        return "Abiotic stress tolerance and environmental adaptation"
+
+    if any(x in t for x in ["root", "lateral root", "root hair"]):
+        return "Root development and resource acquisition"
+
+    if any(x in t for x in ["photosynthesis", "chlorophyll", "light harvesting", "carbon fixation"]):
+        return "Photosynthetic performance and biomass production"
+
+    if any(x in t for x in ["lipid", "fatty acid", "oil", "triacylglycerol"]):
+        return "Seed oil and lipid metabolism"
+
+    if any(x in t for x in ["starch", "sucrose", "carbohydrate", "sugar"]):
+        return "Carbon allocation and yield-related metabolism"
+
+    if any(x in t for x in ["transport", "transmembrane", "ion", "metal"]):
+        return "Membrane transport, nutrient uptake, and ion homeostasis"
+
+    if any(x in t for x in ["transcription", "dna-binding", "regulation of gene expression"]):
+        return "Transcriptional regulation of development and adaptation"
+
+    if any(x in t for x in ["protein kinase", "phosphorylation", "signal transduction"]):
+        return "Signaling pathways involved in growth, stress response, and selection"
+
+    if any(x in t for x in ["cell division", "cell cycle", "mitotic"]):
+        return "Cell proliferation and growth-related developmental processes"
+
+    return "Candidate selected function requiring further biological interpretation"
+
+for scan, infile in files.items():
+    df = pd.read_csv(infile, sep="\t")
+
+    go_terms = []
+    go_categories = []
+    interpretations = []
+
+    for go_id in df["GO"]:
+        if go_id in go:
+            term_name = go[go_id].name
+            category = go_category_namespace(go[go_id].namespace)
+        else:
+            term_name = "NA"
+            category = "NA"
+
+        go_terms.append(term_name)
+        go_categories.append(category)
+        interpretations.append(
+            interpret_go(term_name) if term_name != "NA" else "GO term not found in ontology"
+        )
+
+    df.insert(1, "GO_category", go_categories)
+    df.insert(2, "GO_term", go_terms)
+    df.insert(3, "Functional_interpretation", interpretations)
+
+    preferred_cols = [
+        "GO_category",
+        "GO_term",
+        "GO",
+        "Functional_interpretation",
+        "Selected_with_GO",
+        "Selected_total",
+        "Background_with_GO",
+        "Background_total",
+        "Odds_ratio",
+        "P_value",
+        "FDR",
+        "minus_log10_FDR",
+        "Gene_ratio",
+        "Bg_ratio",
+        "Sweep_type",
+    ]
+
+    preferred_cols = [c for c in preferred_cols if c in df.columns]
+    df = df[preferred_cols]
+
+    outfile = f"{IN_DIR}/{scan}_GO_enrichment_named.tsv"
+    df.to_csv(outfile, sep="\t", index=False)
+
+    print(f"Saved: {outfile}")
+    print(df.head(10)[["GO_category", "GO_term", "GO", "Functional_interpretation", "FDR"]])
 
 
 
