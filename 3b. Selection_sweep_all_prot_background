@@ -1,0 +1,520 @@
+#1. Make whole-genome one-isoform protein background
+grep -c "^>" soybean_all_genes.one_isoform.fa
+48387
+######################################################
+python - Gmax_880_Wm82.a6.v1.protein.fa soybean_all_genes.one_isoform.fa << 'PY'
+import sys
+
+infile = sys.argv[1]
+outfile = sys.argv[2]
+
+seen = set()
+write = False
+
+with open(infile) as fin, open(outfile, "w") as fout:
+    for line in fin:
+        if line.startswith(">"):
+            locus = None
+            for field in line.strip().split():
+                if field.startswith("locus="):
+                    locus = field.replace("locus=", "")
+                    break
+
+            if locus and locus not in seen:
+                seen.add(locus)
+                write = True
+                fout.write(line)
+            else:
+                write = False
+        else:
+            if write:
+                fout.write(line)
+PY
+
+
+########################################################################
+#2. Run eggNOG on the whole-genome background
+mamba activate eggnog_env
+
+EGGNOG_DB=/data1/jkitony/Baobab/eggnog/eggnog-mapper/eggnog_data
+
+mkdir -p eggnog_results/background
+
+emapper.py \
+    -i soybean_all_genes.one_isoform.fa \
+    --itype proteins \
+    --output soybean_background \
+    --output_dir eggnog_results/background \
+    --data_dir ${EGGNOG_DB} \
+    --cpu 45
+
+#################################################################################
+yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
+#3. Use this as the GO background
+Selected sets:
+XPCLRS/annotation/domestication.top1.gene_ids.txt
+XPCLRS/annotation/improvement.top1.gene_ids.txt
+
+Background:
+eggnog_results/background/soybean_background.emapper.annotations
+################################################################################
+#go_enrichment_real_background.py
+/data1/jkitony/soybean/SNPs_selection_scan ]$
+mamba create -n goenv \
+    python=3.11 \
+    pandas \
+    scipy \
+    statsmodels \
+    matplotlib \
+    goatools \
+    seaborn \
+    numpy \
+    -c conda-forge \
+    -c bioconda \
+    -y
+mamba activate goenv
+python go_enrichment_real_background.py
+#################################################################################
+#!/usr/bin/env python3
+
+import pandas as pd
+import numpy as np
+from scipy.stats import fisher_exact
+from statsmodels.stats.multitest import multipletests
+from collections import defaultdict
+from goatools.obo_parser import GODag
+import matplotlib.pyplot as plt
+
+GO_OBO = "go-basic.obo"
+
+BACKGROUND = "eggnog_results/background/soybean_background.emapper.annotations"
+
+SELECTED = {
+    "Domestication": "eggnog_results/domestication/domestication_top1.emapper.annotations",
+    "Improvement": "eggnog_results/improvement/improvement_top1.emapper.annotations",
+}
+
+OUTDIR = "XPCLRS/annotation"
+
+go = GODag(GO_OBO)
+
+def load_emapper(path, sweep_type=None):
+
+    df = pd.read_csv(path, sep="\t", comment="#", header=None)
+
+    header = None
+
+    with open(path) as f:
+        for line in f:
+            if line.startswith("#query"):
+                header = line.strip().lstrip("#").split("\t")
+                break
+
+    df.columns = header
+
+    df = df[df["GOs"].notna()]
+    df = df[df["GOs"] != "-"]
+
+    df["Gene_ID"] = (
+        df["query"]
+        .astype(str)
+        .str.extract(r"(Glyma\.\d+G\d+)")
+    )
+
+    df["GO_set"] = df["GOs"].apply(
+        lambda x: set(
+            [g.strip() for g in str(x).split(",") if g.startswith("GO:")]
+        )
+    )
+
+    if sweep_type:
+        df["Sweep_type"] = sweep_type
+
+    return df
+
+background = load_emapper(BACKGROUND)
+
+bg_genes = set(background["Gene_ID"])
+
+go_to_bg = defaultdict(set)
+
+for _, row in background.iterrows():
+    gene = row["Gene_ID"]
+
+    for go_id in row["GO_set"]:
+        go_to_bg[go_id].add(gene)
+
+def namespace_short(ns):
+    if ns == "biological_process":
+        return "BP"
+    if ns == "molecular_function":
+        return "MF"
+    if ns == "cellular_component":
+        return "CC"
+    return ns
+
+for sweep_type, path in SELECTED.items():
+
+    sel = load_emapper(path, sweep_type)
+
+    sel_genes = set(sel["Gene_ID"])
+
+    rows = []
+
+    for go_id, bg_go_genes in go_to_bg.items():
+
+        a = len(sel_genes & bg_go_genes)
+        b = len(sel_genes - bg_go_genes)
+        c = len((bg_genes - sel_genes) & bg_go_genes)
+        d = len((bg_genes - sel_genes) - bg_go_genes)
+
+        if a < 3:
+            continue
+
+        odds, p = fisher_exact(
+            [[a, b], [c, d]],
+            alternative="greater"
+        )
+
+        if go_id in go:
+            term = go[go_id].name
+            cat = namespace_short(go[go_id].namespace)
+        else:
+            term = "NA"
+            cat = "NA"
+
+        rows.append({
+            "GO_category": cat,
+            "GO_term": term,
+            "GO": go_id,
+            "Selected_with_GO": a,
+            "Selected_total": len(sel_genes),
+            "Background_with_GO": len(bg_go_genes),
+            "Background_total": len(bg_genes),
+            "Odds_ratio": odds,
+            "P_value": p,
+            "Gene_ratio": a / len(sel_genes),
+            "Bg_ratio": len(bg_go_genes) / len(bg_genes),
+            "Sweep_type": sweep_type
+        })
+
+    res = pd.DataFrame(rows)
+
+    res["FDR"] = multipletests(
+        res["P_value"],
+        method="fdr_bh"
+    )[1]
+
+    res["minus_log10_FDR"] = -np.log10(
+        res["FDR"].replace(0, np.nextafter(0, 1))
+    )
+
+    res = res.sort_values(["FDR", "P_value"])
+
+    out_tsv = f"{OUTDIR}/{sweep_type.lower()}_GO_enrichment_real_background.tsv"
+
+    res.to_csv(out_tsv, sep="\t", index=False)
+
+    print(f"\n{sweep_type}")
+    print(res.head(20)[[
+        "GO_category",
+        "GO_term",
+        "GO",
+        "Selected_with_GO",
+        "Odds_ratio",
+        "FDR"
+    ]])
+
+    # Bubble plot
+    plot_df = res[
+        (res["FDR"] < 0.05) &
+        (res["GO_term"] != "NA")
+    ].copy()
+
+    if len(plot_df) > 25:
+        plot_df = plot_df.head(25)
+
+    plot_df["Label"] = (
+        plot_df["GO_term"] +
+        " (" +
+        plot_df["GO"] +
+        ")"
+    )
+
+    plot_df = plot_df.sort_values("minus_log10_FDR")
+
+    plt.figure(figsize=(10, 8))
+
+    plt.scatter(
+        plot_df["Gene_ratio"],
+        plot_df["Label"],
+        s=plot_df["Selected_with_GO"] * 10,
+        c=plot_df["minus_log10_FDR"],
+        alpha=0.8
+    )
+
+    plt.colorbar(label="-log10(FDR)")
+
+    plt.xlabel("Gene ratio")
+    plt.ylabel("GO term")
+    plt.title(f"GO enrichment: {sweep_type}")
+
+    plt.tight_layout()
+
+    png = f"{OUTDIR}/{sweep_type.lower()}_GO_bubble_real_background.png"
+    pdf = f"{OUTDIR}/{sweep_type.lower()}_GO_bubble_real_background.pdf"
+
+    plt.savefig(png, dpi=300)
+    plt.savefig(pdf)
+
+    plt.close()
+
+    print(f"Saved: {out_tsv}")
+    print(f"Saved: {png}")
+#######################################################################################
+yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
+#Pull out for expression and SV
+grep -E "GO:0043659|GO:0043661" \
+XPCLRS/annotation/xpclr_top1_functional_annotation_table.tsv \
+> XPCLRS/annotation/symbiosome_peribacteroid_candidate_genes.tsv
+#######################################################################################
+yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
+#make_curated_go_tables_and_plots.py
+#CLEAN PLOTS AND TABLE FOR SUPPLEMENTARY
+python make_curated_go_tables_and_plots.py
+XPCLRS/annotation/domestication_GO_enrichment_curated_plant_relevant.tsv
+XPCLRS/annotation/improvement_GO_enrichment_curated_plant_relevant.tsv
+XPCLRS/annotation/combined_GO_enrichment_curated_plant_relevant.tsv
+
+XPCLRS/annotation/domestication_GO_enrichment_curated_plant_relevant_bubble.png
+XPCLRS/annotation/domestication_GO_enrichment_curated_plant_relevant_bubble.pdf
+
+XPCLRS/annotation/improvement_GO_enrichment_curated_plant_relevant_bubble.png
+XPCLRS/annotation/improvement_GO_enrichment_curated_plant_relevant_bubble.pdf
+
+XPCLRS/annotation/symbiosome_peribacteroid_candidate_genes.tsv
+XPCLRS/annotation/symbiosome_peribacteroid_gene_ids.txt
+#####################################################################################
+#!/usr/bin/env python3
+
+import os
+import re
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+OUTDIR = "XPCLRS/annotation"
+ANNOT_TABLE = f"{OUTDIR}/xpclr_top1_functional_annotation_table.tsv"
+
+GO_FILES = {
+    "domestication": f"{OUTDIR}/domestication_GO_enrichment_real_background.tsv",
+    "improvement": f"{OUTDIR}/improvement_GO_enrichment_real_background.tsv",
+}
+
+# Remove clearly non-plant/cross-kingdom artifact terms from manuscript table/plots
+EXCLUDE_KEYWORDS = [
+    "blood", "arterial", "angiogenesis", "vessel endothelial",
+    "mating projection", "fungal-type", "septum digestion",
+    "primary cell septum", "division septum",
+    "animal", "embryonic placenta", "neuron", "muscle",
+]
+
+# Keep terms with plant-relevant biology
+KEEP_KEYWORDS = [
+    "root", "seed", "flower", "floral", "germination", "dormancy",
+    "cell wall", "glucan", "pectin", "cellulose", "lignin", "xylan",
+    "shatter", "dehiscence", "abscission",
+    "defense", "immune", "biotic", "pathogen",
+    "oxidative", "reactive oxygen", "redox",
+    "abiotic", "salt", "drought", "water", "cold", "heat",
+    "transport", "transmembrane", "ion", "metal", "manganese",
+    "photosynthesis", "chlorophyll", "carbon", "carbohydrate",
+    "lipid", "fatty acid", "oil",
+    "hormone", "auxin", "gibberellin", "abscisic acid", "ethylene",
+    "jasmonic", "salicylic", "cytokinin",
+    "symbiosome", "peribacteroid", "bacteroid", "nodulation", "nitrogen",
+    "cell division", "cell cycle", "cytokinesis",
+    "transcription", "dna-binding", "kinase", "phosphorylation",
+    "membrane", "vacuolar", "plasma membrane",
+    "glucosidase", "glycoside", "glucosinolate",
+    "methyltransferase", "oxidoreductase",
+]
+
+def is_plant_relevant(term):
+    if pd.isna(term):
+        return False
+    t = str(term).lower()
+
+    if t == "na":
+        return False
+
+    if any(k in t for k in EXCLUDE_KEYWORDS):
+        return False
+
+    return any(k in t for k in KEEP_KEYWORDS)
+
+def functional_interpretation(term):
+    t = str(term).lower()
+
+    if any(k in t for k in ["symbiosome", "peribacteroid", "bacteroid", "nodulation", "nitrogen"]):
+        return "Legume-rhizobia symbiosis and biological nitrogen fixation"
+
+    if any(k in t for k in ["cell wall", "glucan", "pectin", "cellulose", "lignin", "xylan"]):
+        return "Cell wall remodeling related to growth, architecture, and pod/seed traits"
+
+    if any(k in t for k in ["seed", "germination", "dormancy"]):
+        return "Seed development, dormancy, and domestication-related seed traits"
+
+    if any(k in t for k in ["flower", "floral", "photoperiod", "circadian"]):
+        return "Flowering time, maturity, and adaptation"
+
+    if any(k in t for k in ["defense", "immune", "pathogen", "biotic"]):
+        return "Defense response and biotic stress adaptation"
+
+    if any(k in t for k in ["oxidative", "reactive oxygen", "redox", "oxidoreductase"]):
+        return "Oxidative stress response and redox homeostasis"
+
+    if any(k in t for k in ["transport", "transmembrane", "ion", "metal", "manganese"]):
+        return "Membrane transport, nutrient uptake, and ion homeostasis"
+
+    if any(k in t for k in ["lipid", "fatty acid", "oil"]):
+        return "Lipid metabolism and seed composition"
+
+    if any(k in t for k in ["photosynthesis", "chlorophyll", "carbon", "carbohydrate"]):
+        return "Carbon metabolism, photosynthesis, and biomass production"
+
+    if any(k in t for k in ["hormone", "auxin", "gibberellin", "abscisic acid", "ethylene", "jasmonic", "salicylic"]):
+        return "Hormone signaling controlling growth, stress response, and adaptation"
+
+    if any(k in t for k in ["cell division", "cell cycle", "cytokinesis"]):
+        return "Cell proliferation and developmental growth"
+
+    if any(k in t for k in ["transcription", "dna-binding"]):
+        return "Transcriptional regulation of development and adaptation"
+
+    if any(k in t for k in ["kinase", "phosphorylation"]):
+        return "Signaling pathways involved in growth and stress response"
+
+    if any(k in t for k in ["glucosidase", "glycoside", "glucosinolate"]):
+        return "Secondary metabolism, defense, and cell wall/metabolic remodeling"
+
+    return "Plant-relevant selected function"
+
+def make_bubble(df, scan, outfile_prefix, topn=20):
+    plot_df = df.copy()
+    plot_df = plot_df.sort_values(["FDR", "P_value"]).head(topn)
+    plot_df = plot_df.sort_values("minus_log10_FDR")
+
+    plot_df["Label"] = plot_df["GO_term"] + " (" + plot_df["GO"] + ")"
+
+    plt.figure(figsize=(10, max(6, 0.35 * len(plot_df))))
+
+    sc = plt.scatter(
+        plot_df["Gene_ratio"],
+        plot_df["Label"],
+        s=plot_df["Selected_with_GO"] * 12,
+        c=plot_df["minus_log10_FDR"],
+        alpha=0.85
+    )
+
+    plt.colorbar(sc, label="-log10(FDR)")
+    plt.xlabel("Gene ratio")
+    plt.ylabel("")
+    plt.title(f"Plant-relevant GO enrichment: {scan.capitalize()}")
+    plt.tight_layout()
+
+    plt.savefig(f"{outfile_prefix}.png", dpi=300)
+    plt.savefig(f"{outfile_prefix}.pdf")
+    plt.close()
+
+def extract_genes_for_go_terms():
+    annot = pd.read_csv(ANNOT_TABLE, sep="\t")
+
+    targets = {
+        "symbiosome_peribacteroid": ["GO:0043659", "GO:0043661", "GO:0043660"],
+    }
+
+    for name, go_ids in targets.items():
+        pattern = "|".join(go_ids)
+
+        sub = annot[
+            annot["GO_terms"].fillna("").str.contains(pattern, regex=True)
+        ].copy()
+
+        out = f"{OUTDIR}/{name}_candidate_genes.tsv"
+        sub.to_csv(out, sep="\t", index=False)
+
+        gene_out = f"{OUTDIR}/{name}_gene_ids.txt"
+        sub["Gene_ID"].dropna().drop_duplicates().sort_values().to_csv(
+            gene_out, index=False, header=False
+        )
+
+        print(f"Saved genes for {name}: {out}")
+        print(f"Saved gene IDs for {name}: {gene_out}")
+        print(f"Number of genes: {sub['Gene_ID'].nunique()}")
+
+all_curated = []
+
+for scan, infile in GO_FILES.items():
+    df = pd.read_csv(infile, sep="\t")
+
+    df = df[df["GO_term"].notna()]
+    df = df[df["GO_term"] != "NA"]
+    df = df[df["GO_category"].isin(["BP", "MF", "CC"])]
+    df = df[df["FDR"] < 0.05].copy()
+
+    df["Plant_relevant"] = df["GO_term"].apply(is_plant_relevant)
+    df = df[df["Plant_relevant"]].copy()
+
+    df["Functional_interpretation"] = df["GO_term"].apply(functional_interpretation)
+
+    df = df.sort_values(["FDR", "P_value"])
+
+    cols = [
+        "GO_category",
+        "GO_term",
+        "GO",
+        "Functional_interpretation",
+        "Selected_with_GO",
+        "Selected_total",
+        "Background_with_GO",
+        "Background_total",
+        "Odds_ratio",
+        "P_value",
+        "FDR",
+        "minus_log10_FDR",
+        "Gene_ratio",
+        "Bg_ratio",
+        "Sweep_type",
+    ]
+
+    cols = [c for c in cols if c in df.columns]
+    df = df[cols]
+
+    out_table = f"{OUTDIR}/{scan}_GO_enrichment_curated_plant_relevant.tsv"
+    df.to_csv(out_table, sep="\t", index=False)
+
+    make_bubble(
+        df,
+        scan,
+        f"{OUTDIR}/{scan}_GO_enrichment_curated_plant_relevant_bubble"
+    )
+
+    all_curated.append(df)
+
+    print(f"\n{scan.capitalize()}:")
+    print(f"Saved curated table: {out_table}")
+    print(f"Terms retained: {len(df)}")
+    print(df.head(10)[["GO_category", "GO_term", "GO", "Selected_with_GO", "FDR"]])
+
+combined = pd.concat(all_curated, ignore_index=True)
+combined.to_csv(
+    f"{OUTDIR}/combined_GO_enrichment_curated_plant_relevant.tsv",
+    sep="\t",
+    index=False
+)
+
+extract_genes_for_go_terms()
+
+print("\nDone.")
+#####################################################################################################
