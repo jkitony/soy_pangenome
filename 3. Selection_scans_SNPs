@@ -27,7 +27,7 @@ singularity build xpclrs.sif docker://tale88/xpclrs:latest
 nano make_selection_groups.py
 python make_selection_groups.py
 
-#output
+#output -532
 Counts from intersected metadata:
 Ecotype
 Landrace     199
@@ -176,6 +176,7 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 #1. Main XPCLRS workflow script
 chmod +x run_xpclrs_pipeline.sh
 ./run_xpclrs_pipeline.sh
+
 #output
 XPCLRS/plots/domestication_XPCLR.manhattan.png
 XPCLRS/plots/domestication_XPCLR.manhattan.pdf
@@ -196,7 +197,7 @@ XPCLRS/annotation/shared_domestication_improvement.top1.genes.txt
 XPCLRS/annotation/xpclr_top1_summary.tsv
 ###############
 #report
-overlap with expression dataset
+overlap with the expression dataset
 GO enrichment
 trait interpretation
 overlap with GWAS/QTL
