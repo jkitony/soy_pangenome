@@ -1,0 +1,396 @@
+cd /data1/jkitony/soybean
+mkdir -p SNP_SV_comparison/{plots,tables}
+cd SNP_SV_comparison
+python plot_snp_sv_gene_upset.py
+#############################
+
+cat > plot_snp_sv_gene_upset.py << 'PY'
+#!/usr/bin/env python3
+
+import os
+import pandas as pd
+import matplotlib.pyplot as plt
+from itertools import combinations
+
+OUTDIR = "plots"
+TABLEDIR = "tables"
+os.makedirs(OUTDIR, exist_ok=True)
+os.makedirs(TABLEDIR, exist_ok=True)
+
+FILES = {
+    "SNP_domestication": "/data1/jkitony/soybean/SNPs_selection_scan/XPCLRS/annotation/domestication.top1.gene_ids.txt",
+    "SNP_improvement": "/data1/jkitony/soybean/SNPs_selection_scan/XPCLRS/annotation/improvement.top1.gene_ids.txt",
+    "SV_domestication": "/data1/jkitony/soybean/SVs_selection_scan/XPCLRS_SV/annotation/domestication.SV.top1.gene_ids.txt",
+    "SV_improvement": "/data1/jkitony/soybean/SVs_selection_scan/XPCLRS_SV/annotation/improvement.SV.top1.gene_ids.txt",
+}
+
+def read_gene_set(path):
+    with open(path) as f:
+        genes = {line.strip() for line in f if line.strip()}
+    # standardize IDs
+    genes = {g.replace(".Wm82.a6.v1", "") for g in genes}
+    return genes
+
+sets = {name: read_gene_set(path) for name, path in FILES.items()}
+
+# Save basic set sizes
+summary = pd.DataFrame({
+    "Set": list(sets.keys()),
+    "Gene_count": [len(v) for v in sets.values()]
+})
+summary.to_csv(f"{TABLEDIR}/snp_sv_gene_set_sizes.tsv", sep="\t", index=False)
+
+print("\nGene set sizes")
+print(summary)
+
+# Build membership table
+all_genes = sorted(set().union(*sets.values()))
+
+membership = pd.DataFrame({"Gene_ID": all_genes})
+
+for name, genes in sets.items():
+    membership[name] = membership["Gene_ID"].isin(genes)
+
+membership.to_csv(
+    f"{TABLEDIR}/snp_sv_gene_membership_matrix.tsv",
+    sep="\t",
+    index=False
+)
+
+# Compute exact intersections for all non-empty combinations
+rows = []
+
+names = list(sets.keys())
+
+for r in range(1, len(names) + 1):
+    for combo in combinations(names, r):
+
+        in_combo = set.intersection(*(sets[x] for x in combo))
+
+        excluded = [x for x in names if x not in combo]
+
+        exact = in_combo.copy()
+
+        for x in excluded:
+            exact -= sets[x]
+
+        rows.append({
+            "Intersection": "&".join(combo),
+            "Degree": r,
+            "Gene_count": len(exact),
+            "Genes": ",".join(sorted(exact))
+        })
+
+intersections = pd.DataFrame(rows)
+intersections = intersections.sort_values(
+    ["Gene_count", "Degree"],
+    ascending=[False, True]
+)
+
+intersections.to_csv(
+    f"{TABLEDIR}/snp_sv_gene_upset_intersections.tsv",
+    sep="\t",
+    index=False
+)
+
+print("\nTop intersections")
+print(intersections[["Intersection", "Degree", "Gene_count"]].head(20))
+
+# Prepare top intersections for plotting
+plot_df = intersections[intersections["Gene_count"] > 0].head(20).copy()
+plot_df = plot_df.iloc[::-1].reset_index(drop=True)
+
+# Bar plot of intersection sizes
+plt.figure(figsize=(10, 7))
+plt.barh(plot_df["Intersection"], plot_df["Gene_count"])
+plt.xlabel("Number of genes")
+plt.ylabel("Intersection")
+plt.title("SNP vs SV selective sweep gene overlap")
+plt.tight_layout()
+plt.savefig(f"{OUTDIR}/snp_sv_gene_upset_barplot.png", dpi=300)
+plt.savefig(f"{OUTDIR}/snp_sv_gene_upset_barplot.pdf")
+plt.close()
+
+# Create a simple UpSet-style dot matrix + bars
+fig = plt.figure(figsize=(11, 8))
+
+gs = fig.add_gridspec(
+    2,
+    1,
+    height_ratios=[3, 1.4],
+    hspace=0.05
+)
+
+ax_bar = fig.add_subplot(gs[0])
+ax_mat = fig.add_subplot(gs[1])
+
+x = range(len(plot_df))
+
+ax_bar.bar(x, plot_df["Gene_count"])
+ax_bar.set_ylabel("Gene count")
+ax_bar.set_title("SNP and SV sweep gene intersections")
+ax_bar.set_xticks([])
+
+set_names = names
+
+for i, row in plot_df.iterrows():
+    combo = row["Intersection"].split("&")
+    y_positions = []
+
+    for j, set_name in enumerate(set_names):
+        if set_name in combo:
+            ax_mat.scatter(i, j, s=70)
+            y_positions.append(j)
+        else:
+            ax_mat.scatter(i, j, s=25, alpha=0.2)
+
+    if len(y_positions) > 1:
+        ax_mat.plot(
+            [i, i],
+            [min(y_positions), max(y_positions)],
+            linewidth=1
+        )
+
+ax_mat.set_yticks(range(len(set_names)))
+ax_mat.set_yticklabels(set_names)
+ax_mat.set_xticks(x)
+ax_mat.set_xticklabels(
+    plot_df["Gene_count"],
+    rotation=90,
+    fontsize=8
+)
+ax_mat.set_xlabel("Intersection size")
+ax_mat.set_ylim(-0.5, len(set_names)-0.5)
+
+plt.tight_layout()
+plt.savefig(f"{OUTDIR}/snp_sv_gene_upset_plot.png", dpi=300)
+plt.savefig(f"{OUTDIR}/snp_sv_gene_upset_plot.pdf")
+plt.close()
+
+print("\nSaved:")
+print(f"{OUTDIR}/snp_sv_gene_upset_plot.png")
+print(f"{OUTDIR}/snp_sv_gene_upset_barplot.png")
+print(f"{TABLEDIR}/snp_sv_gene_upset_intersections.tsv")
+PY
+####################################################################
+#GO
+python compare_go_heatmap.py
+####################################################################
+cat > compare_go_heatmap.py << 'PY'
+#!/usr/bin/env python3
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+import re
+
+OUTDIR = "plots"
+TABLEDIR = "tables"
+
+os.makedirs(OUTDIR, exist_ok=True)
+os.makedirs(TABLEDIR, exist_ok=True)
+
+FILES = {
+    "SNP_dom": "/data1/jkitony/soybean/SNPs_selection_scan/XPCLRS/annotation/domestication_GO_enrichment_real_background.tsv",
+    "SNP_imp": "/data1/jkitony/soybean/SNPs_selection_scan/XPCLRS/annotation/improvement_GO_enrichment_real_background.tsv",
+    "SV_dom": "/data1/jkitony/soybean/SVs_selection_scan/XPCLRS_SV/annotation/domestication_sv_GO_enrichment_real_background.tsv",
+    "SV_imp": "/data1/jkitony/soybean/SVs_selection_scan/XPCLRS_SV/annotation/improvement_sv_GO_enrichment_real_background.tsv",
+}
+
+# Broad or uninformative terms to remove by exact match
+REMOVE_EXACT = [
+    "metabolic process",
+    "cellular process",
+    "biological_process",
+]
+
+# Animal/medical/cross-kingdom artifact terms to remove by keyword
+BLACKLIST_KEYWORDS = [
+    "angiogenesis",
+    "blood",
+    "blood pressure",
+    "blood vessel",
+    "arterial",
+    "endothelial",
+    "cardiac",
+    "heart",
+    "muscle",
+    "neuron",
+    "neuronal",
+    "synapse",
+    "axon",
+    "dendrite",
+    "brain",
+    "learning",
+    "memory",
+    "locomotion",
+    "behavior",
+    "placenta",
+    "embryonic placenta",
+    "mammary",
+    "immune system process",
+    "adaptive immune",
+    "antibody",
+    "lymphocyte",
+    "leukocyte",
+    "macrophage",
+    "T cell",
+    "B cell",
+]
+
+# Fungal/cell-fusion artifacts that are usually not useful for soybean interpretation
+BLACKLIST_KEYWORDS += [
+    "fungal-type",
+    "mating projection",
+    "conjugation with cellular fusion",
+    "septum digestion",
+    "primary cell septum",
+    "division septum",
+]
+
+blacklist_pattern = re.compile(
+    "|".join([re.escape(x) for x in BLACKLIST_KEYWORDS]),
+    flags=re.IGNORECASE
+)
+
+dfs = []
+
+for label, path in FILES.items():
+
+    df = pd.read_csv(path, sep="\t")
+
+    df = df[df["GO_category"] == "BP"].copy()
+
+    df["minus_log10_FDR"] = -np.log10(
+        df["FDR"].replace(0, np.nextafter(0, 1))
+    )
+
+    df["Dataset"] = label
+
+    dfs.append(df)
+
+all_df = pd.concat(dfs, ignore_index=True)
+
+# keep informative terms
+all_df = all_df[
+    (all_df["FDR"] < 0.1) &
+    (all_df["GO_term"].notna()) &
+    (all_df["GO_term"] != "NA")
+].copy()
+
+# remove broad exact terms
+all_df = all_df[
+    ~all_df["GO_term"].isin(REMOVE_EXACT)
+].copy()
+
+# remove blacklisted artifact terms
+all_df["Blacklisted"] = all_df["GO_term"].astype(str).apply(
+    lambda x: bool(blacklist_pattern.search(x))
+)
+
+removed = all_df[all_df["Blacklisted"]].copy()
+
+removed.to_csv(
+    f"{TABLEDIR}/GO_terms_removed_blacklist.tsv",
+    sep="\t",
+    index=False
+)
+
+all_df = all_df[~all_df["Blacklisted"]].copy()
+
+# save curated long-format table
+all_df.to_csv(
+    f"{TABLEDIR}/GO_comparison_curated_long.tsv",
+    sep="\t",
+    index=False
+)
+
+# select strongest terms overall
+top_terms = (
+    all_df.groupby("GO_term")["minus_log10_FDR"]
+    .max()
+    .sort_values(ascending=False)
+    .head(30)
+    .index
+)
+
+plot_df = all_df[
+    all_df["GO_term"].isin(top_terms)
+].copy()
+
+heat = plot_df.pivot_table(
+    index="GO_term",
+    columns="Dataset",
+    values="minus_log10_FDR",
+    fill_value=0
+)
+
+# enforce column order
+heat = heat.reindex(
+    columns=["SNP_dom", "SNP_imp", "SV_dom", "SV_imp"]
+)
+
+# order terms by strongest signal
+heat = heat.loc[
+    heat.max(axis=1).sort_values().index
+]
+
+heat.to_csv(
+    f"{TABLEDIR}/GO_comparison_heatmap.tsv",
+    sep="\t"
+)
+
+# plot
+fig, ax = plt.subplots(figsize=(9, 11))
+
+im = ax.imshow(
+    heat.values,
+    aspect="auto"
+)
+
+ax.set_xticks(range(len(heat.columns)))
+ax.set_xticklabels(heat.columns)
+
+ax.set_yticks(range(len(heat.index)))
+ax.set_yticklabels(heat.index, fontsize=8)
+
+cbar = plt.colorbar(im)
+cbar.set_label("-log10(FDR)")
+
+ax.set_title(
+    "Functional comparison of SNP- and SV-associated sweeps"
+)
+
+plt.tight_layout()
+
+plt.savefig(
+    f"{OUTDIR}/GO_comparison_heatmap.png",
+    dpi=300
+)
+
+plt.savefig(
+    f"{OUTDIR}/GO_comparison_heatmap.pdf"
+)
+
+plt.close()
+
+print("\nSaved:")
+print(f"{OUTDIR}/GO_comparison_heatmap.png")
+print(f"{TABLEDIR}/GO_comparison_heatmap.tsv")
+print(f"{TABLEDIR}/GO_comparison_curated_long.tsv")
+print(f"{TABLEDIR}/GO_terms_removed_blacklist.tsv")
+
+print("\nRemoved blacklisted terms:")
+if len(removed) == 0:
+    print("None")
+else:
+    print(
+        removed[["Dataset", "GO_term", "GO", "FDR"]]
+        .drop_duplicates()
+        .to_string(index=False)
+    )
+
+print("\nFinal heatmap terms:")
+print(heat.index.to_series().to_string(index=False))
+PY
