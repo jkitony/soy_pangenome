@@ -1,0 +1,344 @@
+cd /data1/jkitony/soybean/SVs_selection_scan
+
+mkdir -p raw_vcfs logs qc
+aws s3 cp \
+  s3://salk-tm-shared/soy_aamir/SV_GWAS_filtered_VCF/ \
+  raw_vcfs/ \
+  --recursive \
+  --exclude "*" \
+  --include "Chr*_filtered.vcf.gz"
+
+#40 files
+#ls raw_vcfs/*.tbi | wc -l
+#Index
+for vcf in raw_vcfs/*.vcf.gz
+do
+    echo "Indexing $vcf"
+    bcftools index -t --threads 8 "$vcf"
+done
+##################################################################
+#QC:cut -f2 qc/sample_counts_per_vcf.tsv | sort -u #744
+bcftools query -l raw_vcfs/Chr01_deletions_filtered.vcf.gz > qc/Chr01_deletion.samples.txt
+bcftools query -l raw_vcfs/Chr01_insertions_filtered.vcf.gz > qc/Chr01_insertion.samples.txt
+
+wc -l qc/Chr01_deletion.samples.txt
+wc -l qc/Chr01_insertion.samples.txt
+for vcf in raw_vcfs/*.vcf.gz
+do
+    n=$(bcftools query -l "$vcf" | wc -l)
+    echo -e "$(basename $vcf)\t$n"
+done | tee qc/sample_counts_per_vcf.tsv
+
+for vcf in raw_vcfs/*.vcf.gz
+do
+    n=$(bcftools view -H "$vcf" | wc -l)
+    echo -e "$(basename $vcf)\t$n"
+done | tee qc/variant_counts_per_vcf.tsv
+
+awk '{sum+=$2} END{print "Total SV markers:", sum}' qc/variant_counts_per_vcf.tsv
+#Total SV markers: 134503
+#########################################################################
+#Concatenate and index
+ls raw_vcfs/Chr*_deletions_filtered.vcf.gz raw_vcfs/Chr*_insertions_filtered.vcf.gz \
+  | sort -V > qc/sv_vcf_file_list.txt
+bcftools concat \
+  -f qc/sv_vcf_file_list.txt \
+  -Oz \
+  -o soy.SVmarkers.raw.vcf.gz \
+  --threads 20
+#Sort and index
+mkdir -p tmp_sort
+
+bcftools sort \
+    soy.SVmarkers.raw.vcf.gz \
+    -T tmp_sort \
+    -Oz \
+    -o soy.SVmarkers.sorted.vcf.gz
+
+bcftools index -t soy.SVmarkers.sorted.vcf.gz
+#verify
+bcftools view -H soy.SVmarkers.sorted.vcf.gz | head
+bcftools query -l soy.SVmarkers.sorted.vcf.gz | wc -l
+bcftools view -H soy.SVmarkers.sorted.vcf.gz | wc -l
+mkdir -p qc
+
+echo -e "Dataset\tSamples\tVariants" > qc/SVmarkers_dataset_summary.tsv
+echo -e "soy.SVmarkers.sorted.vcf.gz\t744\t134503" >> qc/SVmarkers_dataset_summary.tsv
+
+bcftools query -l soy.SVmarkers.sorted.vcf.gz > qc/SVmarker_samples.txt
+bcftools stats soy.SVmarkers.sorted.vcf.gz > qc/SVmarkers.stats.txt
+
+#SVs uses PI while SNPs used Sample column
+(base) [ jkitony@10.7.30.227:/data1/jkitony/soybean/SVs_selection_scan ]$ cp /data1/jkitony/soybean/SNPs_selection_scan/Meta.csv .
+#re-generate IDs
+(base) [ jkitony@10.7.30.227:/data1/jkitony/soybean/SVs_selection_scan ]$ cat > make_sv_groups_from_meta.py << 'PY'
+#!/usr/bin/env python3
+import csv
+meta = "Meta.csv"
+groups = {
+    "Wild_type": "Wild_type.SV.txt",
+    "Landrace": "Landrace.SV.txt",
+    "Cultivar": "Cultivar.SV.txt",
+}
+samples = {g: set() for g in groups}
+# latin1 safely reads almost any Excel-style CSV
+with open(meta, newline="", encoding="latin1") as f:
+    reader = csv.DictReader(f)
+    print("Detected columns:")
+    print(reader.fieldnames)
+    for row in reader:
+        pi = row["PI"].strip()
+        ecotype = row["Ecotype"].strip()
+        if ecotype in samples and pi and pi != "NA":
+            samples[ecotype].add(pi)
+for group, outfile in groups.items():
+    with open(outfile, "w") as out:
+        for x in sorted(samples[group]):
+            out.write(x + "\n")
+    print(group, len(samples[group]), outfile)
+PY
+(base) [ jkitony@10.7.30.227:/data1/jkitony/soybean/SVs_selection_scan ]$ python make_sv_groups_from_meta.py
+Detected columns:
+['Sample', 'PI', 'Read_coverage', 'Species', 'Ecotype', 'Country', 'Location', 'Year', 'Plant', 'Type', 'Maturity_group', 'Reference']
+Wild_type 124 Wild_type.SV.txt
+Landrace 716 Landrace.SV.txt
+Cultivar 247 Cultivar.SV.txt
+#1,087 in meta
+#IN SVs
+comm -12 <(sort qc/SVmarker_samples.txt) <(sort Wild_type.SV.txt) > qc/Wild_type.SVsamples.txt
+comm -12 <(sort qc/SVmarker_samples.txt) <(sort Landrace.SV.txt) > qc/Landrace.SVsamples.txt
+comm -12 <(sort qc/SVmarker_samples.txt) <(sort Cultivar.SV.txt) > qc/Cultivar.SVsamples.txt
+
+echo -e "Group\tMeta_count\tSV_count\tMissing_from_SV" > qc/SV_group_summary.tsv
+echo -e "Wild_type\t$(wc -l < Wild_type.SV.txt)\t$(wc -l < qc/Wild_type.SVsamples.txt)\t$(comm -23 <(sort Wild_type.SV.txt) <(sort qc/SVmarker_samples.txt) | wc -l)" >> qc/SV_group_summary.tsv
+echo -e "Landrace\t$(wc -l < Landrace.SV.txt)\t$(wc -l < qc/Landrace.SVsamples.txt)\t$(comm -23 <(sort Landrace.SV.txt) <(sort qc/SVmarker_samples.txt) | wc -l)" >> qc/SV_group_summary.tsv
+echo -e "Cultivar\t$(wc -l < Cultivar.SV.txt)\t$(wc -l < qc/Cultivar.SVsamples.txt)\t$(comm -23 <(sort Cultivar.SV.txt) <(sort qc/SVmarker_samples.txt) | wc -l)" >> qc/SV_group_summary.tsv
+
+cat qc/SV_group_summary.tsv
+Group   Meta_count      SV_count        Missing_from_SV
+Wild_type       124     72      52
+Landrace        716     561     155
+Cultivar        247     111     136
+################################
+#Plot
+#python plot_sv_qc.py
+qc/sv_qc_plots/insertion_vs_deletion_counts.png
+qc/sv_qc_plots/sv_size_distribution_log10.png
+qc/sv_qc_plots/sv_allele_frequency_spectrum.png
+qc/sv_qc_plots/sv_qc_summary_table.tsv
+###############################
+cat > plot_sv_qc.py << 'PY'
+#!/usr/bin/env python3
+
+import gzip
+import re
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+VCF = "soy.SVmarkers.sorted.vcf.gz"
+OUTDIR = "qc/sv_qc_plots"
+
+os.makedirs(OUTDIR, exist_ok=True)
+
+rows = []
+
+def parse_info(info):
+    d = {}
+    for item in info.split(";"):
+        if "=" in item:
+            k, v = item.split("=", 1)
+            d[k] = v
+        else:
+            d[item] = True
+    return d
+
+def infer_svtype(vid, ref, alt, info):
+    svtype = info.get("SVTYPE", "")
+
+    if svtype:
+        return svtype.upper()
+
+    text = f"{vid} {alt}".lower()
+
+    if "del" in text:
+        return "DEL"
+    if "ins" in text:
+        return "INS"
+
+    if len(ref) > len(alt):
+        return "DEL"
+    if len(alt) > len(ref):
+        return "INS"
+
+    return "OTHER"
+
+def infer_svlen(ref, alt, info):
+    for key in ["SVLEN", "LEN", "END"]:
+        if key in info:
+            try:
+                if key == "END":
+                    return abs(int(info[key]) - pos + 1)
+                return abs(int(str(info[key]).split(",")[0]))
+            except Exception:
+                pass
+
+    if alt.startswith("<") and alt.endswith(">"):
+        return np.nan
+
+    return abs(len(alt) - len(ref))
+
+def allele_frequency(format_field, sample_fields):
+    keys = format_field.split(":")
+    try:
+        gt_index = keys.index("GT")
+    except ValueError:
+        return np.nan
+
+    alt_count = 0
+    allele_count = 0
+
+    for sample in sample_fields:
+        vals = sample.split(":")
+        if gt_index >= len(vals):
+            continue
+
+        gt = vals[gt_index]
+
+        if gt in ["./.", ".|.", "."]:
+            continue
+
+        alleles = re.split(r"[\/|]", gt)
+
+        for a in alleles:
+            if a == ".":
+                continue
+            allele_count += 1
+            if a != "0":
+                alt_count += 1
+
+    if allele_count == 0:
+        return np.nan
+
+    return alt_count / allele_count
+
+with gzip.open(VCF, "rt") as f:
+    for line in f:
+        if line.startswith("#"):
+            continue
+
+        parts = line.rstrip("\n").split("\t")
+
+        chrom = parts[0]
+        pos = int(parts[1])
+        vid = parts[2]
+        ref = parts[3]
+        alt = parts[4]
+        info = parse_info(parts[7])
+        fmt = parts[8]
+        samples = parts[9:]
+
+        svtype = infer_svtype(vid, ref, alt, info)
+        svlen = infer_svlen(ref, alt, info)
+        af = allele_frequency(fmt, samples)
+
+        rows.append({
+            "CHROM": chrom,
+            "POS": pos,
+            "ID": vid,
+            "SVTYPE": svtype,
+            "SVLEN": svlen,
+            "AF": af
+        })
+
+df = pd.DataFrame(rows)
+
+out_table = f"{OUTDIR}/sv_qc_summary_table.tsv"
+df.to_csv(out_table, sep="\t", index=False)
+
+print("Saved:", out_table)
+print(df["SVTYPE"].value_counts(dropna=False))
+print("Total variants:", len(df))
+print("Variants with AF:", df["AF"].notna().sum())
+print("Variants with SVLEN:", df["SVLEN"].notna().sum())
+
+# 1. Insertion vs deletion counts
+counts = df[df["SVTYPE"].isin(["INS", "DEL"])]["SVTYPE"].value_counts()
+
+plt.figure(figsize=(5, 4))
+plt.bar(counts.index, counts.values)
+plt.ylabel("Number of SV markers")
+plt.xlabel("SV type")
+plt.title("Insertion vs deletion counts")
+plt.tight_layout()
+plt.savefig(f"{OUTDIR}/insertion_vs_deletion_counts.png", dpi=300)
+plt.savefig(f"{OUTDIR}/insertion_vs_deletion_counts.pdf")
+plt.close()
+
+# 2. SV size distribution
+size_df = df[
+    df["SVTYPE"].isin(["INS", "DEL"]) &
+    df["SVLEN"].notna() &
+    (df["SVLEN"] > 0)
+].copy()
+
+size_df["log10_SVLEN"] = np.log10(size_df["SVLEN"])
+
+plt.figure(figsize=(7, 5))
+for svtype in ["INS", "DEL"]:
+    sub = size_df[size_df["SVTYPE"] == svtype]
+    if len(sub) > 0:
+        plt.hist(sub["log10_SVLEN"], bins=50, alpha=0.6, label=svtype)
+
+plt.xlabel("log10(SV size in bp)")
+plt.ylabel("Number of SV markers")
+plt.title("SV size distribution")
+plt.legend(frameon=False)
+plt.tight_layout()
+plt.savefig(f"{OUTDIR}/sv_size_distribution_log10.png", dpi=300)
+plt.savefig(f"{OUTDIR}/sv_size_distribution_log10.pdf")
+plt.close()
+
+# 3. Allele frequency spectrum
+af_df = df[df["AF"].notna()].copy()
+
+plt.figure(figsize=(7, 5))
+plt.hist(af_df["AF"], bins=50)
+plt.xlabel("Alternate allele frequency")
+plt.ylabel("Number of SV markers")
+plt.title("Allele frequency spectrum of SV markers")
+plt.tight_layout()
+plt.savefig(f"{OUTDIR}/sv_allele_frequency_spectrum.png", dpi=300)
+plt.savefig(f"{OUTDIR}/sv_allele_frequency_spectrum.pdf")
+plt.close()
+
+print("\nDone. Plots saved in:", OUTDIR)
+PY
+####################
+python qc_qc.py
+#####################
+import pandas as pd
+
+df = pd.read_csv(
+    "qc/sv_qc_plots/sv_qc_summary_table.tsv",
+    sep="\t"
+)
+
+for sv in ["INS", "DEL"]:
+    sub = df[df["SVTYPE"] == sv]
+
+    print("\n", sv)
+    print("Count:", len(sub))
+    print("Median size:", sub["SVLEN"].median())
+    print("Mean size:", round(sub["SVLEN"].mean(),2))
+    print("Max size:", sub["SVLEN"].max())
+
+######
+Metric	INS	DEL
+Count	80,748	53,755
+Median size	214 bp	135 bp
+Mean size	2.3 kb	1.2 kb
+Max size	116 kb	50 kb
+
+######
