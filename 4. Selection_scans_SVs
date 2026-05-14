@@ -402,3 +402,304 @@ for sv in ["INS", "DEL"]:
     print("Median size:", sub["SVLEN"].median())
     print("Mean size:", round(sub["SVLEN"].mean(),2))
     print("Max size:", sub["SVLEN"].max())
+YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY
+YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY
+
+#XPCLR USING
+filtered/soy.SVmarkers.filt.vcf.gz
+qc/Wild_type.SVsamples.txt
+qc/Landrace.SVsamples.txt
+qc/Cultivar.SVsamples.txt
+(base) [ jkitony@10.7.30.227:/data1/jkitony/soybean/SVs_selection_scan ]$ cp /data1/jkitony/soybean/SNPs_selection_scan/go-basic.obo .
+(base) [ jkitony@10.7.30.227:/data1/jkitony/soybean/SVs_selection_scan ]$ cp /data1/jkitony/soybean/SNPs_selection_scan/xpclrs.sif .
+
+YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY
+YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY
+#Step 1. Convert filtered SV VCF to BCF
+bcftools view \
+  filtered/soy.SVmarkers.filt.vcf.gz \
+  -Ob \
+  -o filtered/soy.SVmarkers.filt.bcf
+
+bcftools index filtered/soy.SVmarkers.filt.bcf
+bcftools view -H filtered/soy.SVmarkers.filt.bcf | wc -l
+#53163
+#Step 2. Make XPCLRS output structure
+mkdir -p XPCLRS_SV/{domestication,improvement,combined,plots,annotation}
+###########################################################################
+cat > run_sv_xpclr_all_chromosomes.sh << 'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+VCF="filtered/soy.SVmarkers.filt.bcf"
+SIF="xpclrs.sif"
+
+WILD="qc/Wild_type.SVsamples.txt"
+LANDRACE="qc/Landrace.SVsamples.txt"
+CULTIVAR="qc/Cultivar.SVsamples.txt"
+
+WINDOW=100000
+STEP=20000
+MAXSNPS=50
+MINSNPS=2
+THREADS=20
+
+CHRS="Chr01 Chr02 Chr03 Chr04 Chr05 Chr06 Chr07 Chr08 Chr09 Chr10 Chr11 Chr12 Chr13 Chr14 Chr15 Chr16 Chr17 Chr18 Chr19 Chr20"
+
+mkdir -p XPCLRS_SV/domestication XPCLRS_SV/improvement logs
+
+echo "Running SV-based domestication scan: Wild_type vs Landrace"
+
+for chr in ${CHRS}
+do
+    echo "Domestication ${chr}"
+
+    singularity exec ${SIF} xpclrs \
+        --input ${VCF} \
+        --out XPCLRS_SV/domestication/${chr}.wild_vs_landrace \
+        --samplesA ${WILD} \
+        --samplesB ${LANDRACE} \
+        --chr ${chr} \
+        --size ${WINDOW} \
+        --step ${STEP} \
+        --maxsnps ${MAXSNPS} \
+        --minsnps ${MINSNPS} \
+        --threads ${THREADS} \
+        --format tsv \
+        > logs/SV_domestication_${chr}.log 2>&1
+done
+
+echo "Running SV-based improvement scan: Landrace vs Cultivar"
+
+for chr in ${CHRS}
+do
+    echo "Improvement ${chr}"
+
+    singularity exec ${SIF} xpclrs \
+        --input ${VCF} \
+        --out XPCLRS_SV/improvement/${chr}.landrace_vs_cultivar \
+        --samplesA ${LANDRACE} \
+        --samplesB ${CULTIVAR} \
+        --chr ${chr} \
+        --size ${WINDOW} \
+        --step ${STEP} \
+        --maxsnps ${MAXSNPS} \
+        --minsnps ${MINSNPS} \
+        --threads ${THREADS} \
+        --format tsv \
+        > logs/SV_improvement_${chr}.log 2>&1
+done
+
+echo "Done running SV XP-CLR scans."
+BASH
+
+chmod +x run_sv_xpclr_all_chromosomes.sh
+./run_sv_xpclr_all_chromosomes.sh
+###########################################################
+#Check results
+for f in XPCLRS_SV/domestication/*.xpclr
+do
+    awk -v file=$(basename "$f") '
+    NR>1 && $11!="NaN" && $11!="nan" && $11!="NA" && $11!="" {
+        if ($11+0 > max) max=$11+0
+    }
+    END{print file, max}
+    ' "$f"
+done | sort -k2,2gr | head
+##################
+Chr10.wild_vs_landrace.Chr10.xpclr 130.815
+Chr16.wild_vs_landrace.Chr16.xpclr 93.3178
+Chr04.wild_vs_landrace.Chr04.xpclr 91.9206
+Chr09.wild_vs_landrace.Chr09.xpclr 84.1946
+Chr15.wild_vs_landrace.Chr15.xpclr 77.1299
+Chr19.wild_vs_landrace.Chr19.xpclr 68.246
+Chr05.wild_vs_landrace.Chr05.xpclr 59.2103
+Chr03.wild_vs_landrace.Chr03.xpclr 57.2619
+Chr07.wild_vs_landrace.Chr07.xpclr 51.5801
+Chr17.wild_vs_landrace.Chr17.xpclr 50.7627
+#########################################################
+for f in XPCLRS_SV/improvement/*.xpclr
+do
+    awk -v file=$(basename "$f") '
+    NR>1 && $11!="NaN" && $11!="nan" && $11!="NA" && $11!="" {
+        if ($11+0 > max) max=$11+0
+    }
+    END{print file, max}
+    ' "$f"
+done | sort -k2,2gr | head
+#####################
+Chr02.landrace_vs_cultivar.Chr02.xpclr 29.3481
+Chr05.landrace_vs_cultivar.Chr05.xpclr 14.0687
+Chr09.landrace_vs_cultivar.Chr09.xpclr 9.26371
+Chr14.landrace_vs_cultivar.Chr14.xpclr 8.62042
+Chr18.landrace_vs_cultivar.Chr18.xpclr 7.41685
+Chr03.landrace_vs_cultivar.Chr03.xpclr 7.15415
+Chr04.landrace_vs_cultivar.Chr04.xpclr 6.70576
+Chr16.landrace_vs_cultivar.Chr16.xpclr 6.6865
+Chr08.landrace_vs_cultivar.Chr08.xpclr 6.11067
+Chr10.landrace_vs_cultivar.Chr10.xpclr 5.91374
+#################################################
+#Combine
+mkdir -p XPCLRS_SV/combined XPCLRS_SV/plots XPCLRS_SV/annotation
+awk 'FNR==1 && NR!=1 {next} {print}' XPCLRS_SV/domestication/*.xpclr \
+| awk 'NR==1 || ($11!="NaN" && $11!="nan" && $11!="NA" && $11!="")' \
+> XPCLRS_SV/combined/domestication.SV.full.tsv
+
+awk 'FNR==1 && NR!=1 {next} {print}' XPCLRS_SV/improvement/*.xpclr \
+| awk 'NR==1 || ($11!="NaN" && $11!="nan" && $11!="NA" && $11!="")' \
+> XPCLRS_SV/combined/improvement.SV.full.tsv
+
+###################################################
+#Get thresholds
+python - << 'PY'
+import pandas as pd
+
+for scan in ["domestication", "improvement"]:
+    f = f"XPCLRS_SV/combined/{scan}.SV.full.tsv"
+    df = pd.read_csv(f, sep="\t")
+    df["xpclr"] = pd.to_numeric(df["xpclr"], errors="coerce")
+    df = df.dropna(subset=["xpclr"])
+
+    print("\n", scan)
+    print("Windows:", len(df))
+    print("Top 5%:", df["xpclr"].quantile(0.95))
+    print("Top 1%:", df["xpclr"].quantile(0.99))
+    print("Max:", df["xpclr"].max())
+PY
+#########
+#output
+ domestication
+Windows: 39913
+Top 5%: 1.2040204681048992
+Top 1%: 8.10089323300351
+Max: 130.81489675576012
+
+ improvement
+Windows: 39649
+Top 5%: 0.0
+Top 1%: 0.8948879268428972
+Max: 29.348054483867276
+########################################
+#Plot manhattan
+python plot_sv_xpclr_manhattan.py
+########################################
+
+cat > plot_sv_xpclr_manhattan.py << 'PY'
+#!/usr/bin/env python3
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+
+def chr_sort_key(chrom):
+    chrom = str(chrom).replace("Chr", "")
+    try:
+        return int(chrom)
+    except:
+        return chrom
+
+def make_plot(infile, outfile_prefix, title):
+
+    df = pd.read_csv(infile, sep="\t")
+
+    df["xpclr"] = pd.to_numeric(df["xpclr"], errors="coerce")
+
+    df = df.dropna(subset=["xpclr"])
+
+    df["midpoint"] = (df["start"] + df["stop"]) / 2
+
+    pieces = []
+    ticks = []
+    labels = []
+
+    offset = 0
+
+    for chrom in sorted(df["chrom"].unique(), key=chr_sort_key):
+
+        sub = df[df["chrom"] == chrom].sort_values("midpoint").copy()
+
+        sub["BPcum"] = sub["midpoint"] + offset
+
+        pieces.append(sub)
+
+        ticks.append(sub["BPcum"].median())
+
+        labels.append(chrom.replace("Chr", ""))
+
+        offset = sub["BPcum"].max()
+
+    plot_df = pd.concat(pieces)
+
+    thr95 = plot_df["xpclr"].quantile(0.95)
+    thr99 = plot_df["xpclr"].quantile(0.99)
+
+    # save top1%
+    top1 = plot_df[plot_df["xpclr"] >= thr99]
+
+    top1.to_csv(
+        f"{outfile_prefix}.top1.tsv",
+        sep="\t",
+        index=False
+    )
+
+    plt.figure(figsize=(16,5))
+
+    for chrom in sorted(plot_df["chrom"].unique(), key=chr_sort_key):
+
+        sub = plot_df[plot_df["chrom"] == chrom]
+
+        plt.scatter(
+            sub["BPcum"],
+            sub["xpclr"],
+            s=6,
+            alpha=0.75
+        )
+
+    plt.axhline(
+        thr99,
+        linestyle="--",
+        linewidth=1,
+        label=f"Top 1% = {thr99:.3f}"
+    )
+
+    if thr95 > 0:
+        plt.axhline(
+            thr95,
+            linestyle=":",
+            linewidth=1,
+            label=f"Top 5% = {thr95:.3f}"
+        )
+
+    plt.xticks(ticks, labels, fontsize=8)
+
+    plt.xlabel("Chromosome")
+    plt.ylabel("SV XP-CLR")
+    plt.title(title)
+
+    plt.legend(frameon=False)
+
+    plt.tight_layout()
+
+    plt.savefig(f"{outfile_prefix}.png", dpi=300)
+    plt.savefig(f"{outfile_prefix}.pdf")
+
+    plt.close()
+
+    print(title)
+    print("Top1 threshold:", thr99)
+    print("Top5 threshold:", thr95)
+    print("Top1 windows:", len(top1))
+
+make_plot(
+    "XPCLRS_SV/combined/domestication.SV.full.tsv",
+    "XPCLRS_SV/plots/domestication_SV_XPCLR",
+    "SV XP-CLR: Wild vs Landrace"
+)
+
+make_plot(
+    "XPCLRS_SV/combined/improvement.SV.full.tsv",
+    "XPCLRS_SV/plots/improvement_SV_XPCLR",
+    "SV XP-CLR: Landrace vs Cultivar"
+)
+PY
+
