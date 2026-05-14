@@ -342,3 +342,63 @@ Mean size	2.3 kb	1.2 kb
 Max size	116 kb	50 kb
 
 ######
+########################################################
+#XPCLRS
+########################################################
+########################################################
+mkdir -p filtered logs
+#Fill and index supported tags
+bcftools +fill-tags soy.SVmarkers.sorted.vcf.gz \
+  -Oz \
+  -o filtered/soy.SVmarkers.tags.vcf.gz \
+  -- -t MAF,AC,AN
+bcftools index -t filtered/soy.SVmarkers.tags.vcf.gz
+
+#Filter using MAF and missingness
+bcftools view \
+  -i 'MAF>=0.05 && F_MISSING<=0.2' \
+  filtered/soy.SVmarkers.tags.vcf.gz \
+  -Oz \
+  -o filtered/soy.SVmarkers.filt.vcf.gz
+bcftools index -t filtered/soy.SVmarkers.filt.vcf.gz
+#Check
+echo -e "Dataset\tSamples\tVariants" > qc/SV_filtering_summary.tsv
+
+echo -e "Raw_SVmarkers\t744\t134503" >> qc/SV_filtering_summary.tsv
+
+echo -e "Filtered_SVmarkers\t$(bcftools query -l filtered/soy.SVmarkers.filt.vcf.gz | wc -l)\t$(bcftools view -H filtered/soy.SVmarkers.filt.vcf.gz | wc -l)" >> qc/SV_filtering_summary.tsv
+
+cat qc/SV_filtering_summary.tsv
+Dataset Samples Variants
+Raw_SVmarkers   744     134503
+Filtered_SVmarkers      744     53163
+################################################
+# Plot MAF AND MISSING FILT
+################################################
+cp plot_sv_qc.py plot_sv_qc_filtered.py
+VCF = "filtered/soy.SVmarkers.filt.vcf.gz"
+OUTDIR = "qc/sv_qc_plots_filtered"
+python plot_sv_qc_filtered.py
+#Outputs
+qc/sv_qc_plots_filtered/insertion_vs_deletion_counts.png
+qc/sv_qc_plots_filtered/sv_size_distribution_log10.png
+qc/sv_qc_plots_filtered/sv_allele_frequency_spectrum.png
+####
+nano qc_qc_filt.py
+python qc_qc_filt.py
+##################
+import pandas as pd
+
+df = pd.read_csv(
+    "qc/sv_qc_plots_filtered/sv_qc_summary_table.tsv",
+    sep="\t"
+)
+
+for sv in ["INS", "DEL"]:
+    sub = df[df["SVTYPE"] == sv]
+
+    print("\n", sv)
+    print("Count:", len(sub))
+    print("Median size:", sub["SVLEN"].median())
+    print("Mean size:", round(sub["SVLEN"].mean(),2))
+    print("Max size:", sub["SVLEN"].max())
