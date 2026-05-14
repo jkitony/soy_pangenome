@@ -702,4 +702,539 @@ make_plot(
     "SV XP-CLR: Landrace vs Cultivar"
 )
 PY
+yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
+yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
+#Annotation
+XPCLRS_SV/plots/domestication_SV_XPCLR.top1.tsv
+XPCLRS_SV/plots/improvement_SV_XPCLR.top1.tsv
+YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY
+#(base) [ jkitony@10.7.30.227:/data1/jkitony/soybean/SVs_selection_scan ]$ cp /data1/jkitony/soybean/SNPs_selection_scan/Gmax_880_Wm82.a6.v1.gene.gff3 .
+#1. Prepare gene-only GFF
+GFF="Gmax_880_Wm82.a6.v1.gene.gff3"
 
+awk '$3=="gene"' ${GFF} > XPCLRS_SV/annotation/soybean.genes.gff3
+
+#2. Merge nearby top 1% SV XP-CLR windows
+conda activate soy_selection
+
+MERGE_DIST=100000
+
+for scan in domestication improvement
+do
+    awk 'BEGIN{OFS="\t"} NR>1 {print $1,$2,$3,$11}' \
+        XPCLRS_SV/plots/${scan}_SV_XPCLR.top1.tsv \
+        > XPCLRS_SV/annotation/${scan}.SV.top1.bed
+
+    bedtools sort -i XPCLRS_SV/annotation/${scan}.SV.top1.bed | \
+    bedtools merge -d ${MERGE_DIST} -c 4 -o max \
+        > XPCLRS_SV/annotation/${scan}.SV.top1.merged.bed
+done
+##########
+#output
+(soy_selection) [ jkitony@10.7.30.227:/data1/jkitony/soybean/SVs_selection_scan ]$ wc -l XPCLRS_SV/annotation/*.SV.top1.merged.bed
+  260 XPCLRS_SV/annotation/domestication.SV.top1.merged.bed
+  267 XPCLRS_SV/annotation/improvement.SV.top1.merged.bed
+  527 total
+###########################
+#3. Convert Chr names for GFF intersection
+for scan in domestication improvement
+do
+    awk 'BEGIN{OFS="\t"} {
+        chr=$1
+        gsub("Chr","Gm",chr)
+        print chr,$2,$3,$4
+    }' XPCLRS_SV/annotation/${scan}.SV.top1.merged.bed \
+      > XPCLRS_SV/annotation/${scan}.SV.top1.merged.GFFchr.bed
+done
+
+#4. Intersect merged sweep regions with genes
+for scan in domestication improvement
+do
+    bedtools intersect \
+        -a XPCLRS_SV/annotation/soybean.genes.gff3 \
+        -b XPCLRS_SV/annotation/${scan}.SV.top1.merged.GFFchr.bed \
+        -wa -wb \
+        > XPCLRS_SV/annotation/${scan}.SV.top1.selected_genes.tsv
+done
+
+#5. Extract gene IDs
+for scan in domestication improvement
+do
+    awk -F'\t' '
+    {
+        split($9,a,";")
+        for(i in a){
+            if(a[i] ~ /^ID=/){
+                gsub("ID=","",a[i])
+                print a[i]
+            }
+        }
+    }' XPCLRS_SV/annotation/${scan}.SV.top1.selected_genes.tsv | \
+    sort -u \
+      > XPCLRS_SV/annotation/${scan}.SV.top1.gene_ids.txt
+done
+
+#6. Find shared SV-selected genes
+comm -12 \
+  <(sort XPCLRS_SV/annotation/domestication.SV.top1.gene_ids.txt) \
+  <(sort XPCLRS_SV/annotation/improvement.SV.top1.gene_ids.txt) \
+  > XPCLRS_SV/annotation/shared_domestication_improvement.SV.top1.genes.txt
+
+#7. Make summary table
+{
+echo -e "Category\tCount"
+echo -e "Domestication_SV_top1_sweep_regions\t$(wc -l < XPCLRS_SV/annotation/domestication.SV.top1.merged.bed)"
+echo -e "Improvement_SV_top1_sweep_regions\t$(wc -l < XPCLRS_SV/annotation/improvement.SV.top1.merged.bed)"
+echo -e "Domestication_SV_top1_genes\t$(wc -l < XPCLRS_SV/annotation/domestication.SV.top1.gene_ids.txt)"
+echo -e "Improvement_SV_top1_genes\t$(wc -l < XPCLRS_SV/annotation/improvement.SV.top1.gene_ids.txt)"
+echo -e "Shared_SV_top1_genes\t$(wc -l < XPCLRS_SV/annotation/shared_domestication_improvement.SV.top1.genes.txt)"
+} > XPCLRS_SV/annotation/sv_xpclr_top1_summary.tsv
+
+cat XPCLRS_SV/annotation/sv_xpclr_top1_summary.tsv
+
+YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY
+YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY
+YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY
+
+#GO analysis
+(soy_selection) [ jkitony@10.7.30.227:/data1/jkitony/soybean/SVs_selection_scan ]$ cp /data1/jkitony/soybean/SNPs_selection_scan/Gmax_880_Wm82.a6.v1.protein.fa .
+conda deactivate
+#one isoform
+domestication ~1676
+improvement ~1959
+YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY
+#1. Extract SV sweep proteins
+cat > extract_sv_sweep_proteins.sh << 'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROTEIN_FA="Gmax_880_Wm82.a6.v1.protein.fa"
+ANN_DIR="XPCLRS_SV/annotation"
+
+for scan in domestication improvement
+do
+    echo "Processing ${scan} SV sweep genes..."
+
+    GENE_IDS="${ANN_DIR}/${scan}.SV.top1.gene_ids.txt"
+    LOCUS_IDS="${ANN_DIR}/${scan}.SV.top1.locus_ids.txt"
+    PATTERNS="${ANN_DIR}/${scan}.SV.top1.seqkit_patterns.txt"
+    ALL_PROTEINS="${ANN_DIR}/${scan}.SV.top1.proteins.all_isoforms.fa"
+    ONE_ISOFORM="${ANN_DIR}/${scan}.SV.top1.proteins.one_isoform.fa"
+
+    sed 's/\.Wm82\.a6\.v1$//' "${GENE_IDS}" | sort -u > "${LOCUS_IDS}"
+
+    awk '{print "locus="$1}' "${LOCUS_IDS}" > "${PATTERNS}"
+
+    seqkit grep -n -r -f "${PATTERNS}" "${PROTEIN_FA}" > "${ALL_PROTEINS}"
+
+    python - "${ALL_PROTEINS}" "${ONE_ISOFORM}" << 'PY'
+import sys
+
+infile = sys.argv[1]
+outfile = sys.argv[2]
+
+seen = set()
+write = False
+
+with open(infile) as fin, open(outfile, "w") as fout:
+    for line in fin:
+        if line.startswith(">"):
+            locus = None
+            for field in line.strip().split():
+                if field.startswith("locus="):
+                    locus = field.replace("locus=", "")
+                    break
+
+            if locus and locus not in seen:
+                seen.add(locus)
+                write = True
+                fout.write(line)
+            else:
+                write = False
+        else:
+            if write:
+                fout.write(line)
+PY
+
+    echo "${scan} loci:"
+    wc -l "${LOCUS_IDS}"
+
+    echo "${scan} all isoform proteins:"
+    grep -c "^>" "${ALL_PROTEINS}" || true
+
+    echo "${scan} one isoform proteins:"
+    grep -c "^>" "${ONE_ISOFORM}" || true
+
+    echo
+done
+
+echo "Done extracting SV sweep proteins."
+BASH
+
+chmod +x extract_sv_sweep_proteins.sh
+./extract_sv_sweep_proteins.sh
+###################################
+#2. Run eggNOG on SV sweep proteins
+mamba activate eggnog_env
+
+EGGNOG_DB=/data1/jkitony/Baobab/eggnog/eggnog-mapper/eggnog_data
+
+mkdir -p eggnog_results_sv/domestication eggnog_results_sv/improvement
+
+#################
+#emapper.py \
+    -i XPCLRS_SV/annotation/domestication.SV.top1.proteins.one_isoform.fa \
+    --itype proteins \
+    --output domestication_SV_top1 \
+    --output_dir eggnog_results_sv/domestication \
+    --data_dir ${EGGNOG_DB} \
+    --cpu 45
+
+##########
+emapper.py \
+    -i XPCLRS_SV/annotation/improvement.SV.top1.proteins.one_isoform.fa \
+    --itype proteins \
+    --output improvement_SV_top1 \
+    --output_dir eggnog_results_sv/improvement \
+    --data_dir ${EGGNOG_DB} \
+    --cpu 45
+
+#########
+#3. Make SV functional annotation table
+cat > make_sv_xpclr_function_table.py << 'PY'
+#!/usr/bin/env python3
+
+import pandas as pd
+import re
+
+files = {
+    "Domestication_SV": "eggnog_results_sv/domestication/domestication_SV_top1.emapper.annotations",
+    "Improvement_SV": "eggnog_results_sv/improvement/improvement_SV_top1.emapper.annotations",
+}
+
+tables = []
+
+for sweep_type, path in files.items():
+
+    df = pd.read_csv(path, sep="\t", comment="#", header=None)
+
+    header = None
+    with open(path) as f:
+        for line in f:
+            if line.startswith("#query"):
+                header = line.strip().lstrip("#").split("\t")
+                break
+
+    if header is not None and len(header) == df.shape[1]:
+        df.columns = header
+    else:
+        raise ValueError(f"Could not parse eggNOG header for {path}")
+
+    keep = {
+        "query": "Protein_ID",
+        "Description": "Description",
+        "GOs": "GO_terms",
+        "PFAMs": "Pfam_domain",
+        "KEGG_Pathway": "KEGG_pathway",
+        "KEGG_ko": "KEGG_ortholog",
+        "COG_category": "COG_category",
+        "Preferred_name": "Preferred_name",
+    }
+
+    available = [c for c in keep if c in df.columns]
+    out = df[available].copy()
+    out = out.rename(columns=keep)
+
+    out["Gene_ID"] = out["Protein_ID"].astype(str).str.extract(r"(Glyma\.\d+G\d+)")
+    out["Sweep_type"] = sweep_type
+
+    tables.append(out)
+
+final = pd.concat(tables, ignore_index=True)
+
+cols = [
+    "Gene_ID",
+    "Protein_ID",
+    "Preferred_name",
+    "Description",
+    "GO_terms",
+    "Pfam_domain",
+    "KEGG_pathway",
+    "KEGG_ortholog",
+    "COG_category",
+    "Sweep_type",
+]
+
+final = final[[c for c in cols if c in final.columns]]
+
+out = "XPCLRS_SV/annotation/sv_xpclr_top1_functional_annotation_table.tsv"
+final.to_csv(out, sep="\t", index=False)
+
+print("Saved:", out)
+print(final["Sweep_type"].value_counts())
+PY
+
+python make_sv_xpclr_function_table.py
+##############################################################
+#4. GO enrichment using real soybean background
+eggnog_results/background/soybean_background.emapper.annotations #SNPs re-use
+go-basic.obo
+#run
+mamba activate goenv
+python go_enrichment_sv_real_background.py
+#output
+XPCLRS_SV/annotation/domestication_sv_GO_enrichment_real_background.tsv
+XPCLRS_SV/annotation/improvement_sv_GO_enrichment_real_background.tsv
+XPCLRS_SV/annotation/domestication_sv_GO_bubble_real_background.png
+XPCLRS_SV/annotation/improvement_sv_GO_bubble_real_background.png
+###################################################################
+cat > go_enrichment_sv_real_background.py << 'PY'
+#!/usr/bin/env python3
+
+import pandas as pd
+import numpy as np
+from scipy.stats import fisher_exact
+from statsmodels.stats.multitest import multipletests
+from collections import defaultdict
+from goatools.obo_parser import GODag
+import matplotlib.pyplot as plt
+import os
+
+GO_OBO = "go-basic.obo"
+BACKGROUND = "/data1/jkitony/soybean/SNPs_selection_scan/eggnog_results/background/soybean_background.emapper.annotations"
+
+SELECTED = {
+    "Domestication_SV": "eggnog_results_sv/domestication/domestication_SV_top1.emapper.annotations",
+    "Improvement_SV": "eggnog_results_sv/improvement/improvement_SV_top1.emapper.annotations",
+}
+
+OUTDIR = "XPCLRS_SV/annotation"
+os.makedirs(OUTDIR, exist_ok=True)
+
+go = GODag(GO_OBO)
+
+def load_emapper(path):
+    df = pd.read_csv(path, sep="\t", comment="#", header=None)
+
+    header = None
+    with open(path) as f:
+        for line in f:
+            if line.startswith("#query"):
+                header = line.strip().lstrip("#").split("\t")
+                break
+
+    df.columns = header
+
+    df = df[df["GOs"].notna()]
+    df = df[df["GOs"] != "-"]
+
+    df["Gene_ID"] = df["query"].astype(str).str.extract(r"(Glyma\.\d+G\d+)")
+
+    df = df[df["Gene_ID"].notna()]
+
+    df["GO_set"] = df["GOs"].apply(
+        lambda x: set([g.strip() for g in str(x).split(",") if g.startswith("GO:")])
+    )
+
+    return df
+
+def namespace_short(ns):
+    if ns == "biological_process":
+        return "BP"
+    if ns == "molecular_function":
+        return "MF"
+    if ns == "cellular_component":
+        return "CC"
+    return ns
+
+background = load_emapper(BACKGROUND)
+
+bg_genes = set(background["Gene_ID"])
+
+go_to_bg = defaultdict(set)
+
+for _, row in background.iterrows():
+    for go_id in row["GO_set"]:
+        go_to_bg[go_id].add(row["Gene_ID"])
+
+for sweep_type, path in SELECTED.items():
+
+    selected_df = load_emapper(path)
+    selected_genes = set(selected_df["Gene_ID"])
+
+    rows = []
+
+    for go_id, bg_go_genes in go_to_bg.items():
+
+        a = len(selected_genes & bg_go_genes)
+        b = len(selected_genes - bg_go_genes)
+        c = len((bg_genes - selected_genes) & bg_go_genes)
+        d = len((bg_genes - selected_genes) - bg_go_genes)
+
+        if a < 3:
+            continue
+
+        odds, p = fisher_exact([[a, b], [c, d]], alternative="greater")
+
+        if go_id in go:
+            term = go[go_id].name
+            category = namespace_short(go[go_id].namespace)
+        else:
+            term = "NA"
+            category = "NA"
+
+        rows.append({
+            "GO_category": category,
+            "GO_term": term,
+            "GO": go_id,
+            "Selected_with_GO": a,
+            "Selected_total": len(selected_genes),
+            "Background_with_GO": len(bg_go_genes),
+            "Background_total": len(bg_genes),
+            "Odds_ratio": odds,
+            "P_value": p,
+            "Gene_ratio": a / len(selected_genes),
+            "Bg_ratio": len(bg_go_genes) / len(bg_genes),
+            "Sweep_type": sweep_type
+        })
+
+    res = pd.DataFrame(rows)
+
+    res["FDR"] = multipletests(res["P_value"], method="fdr_bh")[1]
+    res["minus_log10_FDR"] = -np.log10(
+        res["FDR"].replace(0, np.nextafter(0, 1))
+    )
+
+    res = res.sort_values(["FDR", "P_value"])
+
+    prefix = sweep_type.lower()
+
+    out_tsv = f"{OUTDIR}/{prefix}_GO_enrichment_real_background.tsv"
+    res.to_csv(out_tsv, sep="\t", index=False)
+
+    plot_df = res[(res["FDR"] < 0.05) & (res["GO_term"] != "NA")].copy()
+
+    if len(plot_df) > 25:
+        plot_df = plot_df.head(25)
+
+    if len(plot_df) > 0:
+        plot_df["Label"] = plot_df["GO_term"] + " (" + plot_df["GO"] + ")"
+        plot_df = plot_df.sort_values("minus_log10_FDR")
+
+        plt.figure(figsize=(10, max(6, 0.35 * len(plot_df))))
+        sc = plt.scatter(
+            plot_df["Gene_ratio"],
+            plot_df["Label"],
+            s=plot_df["Selected_with_GO"] * 10,
+            c=plot_df["minus_log10_FDR"],
+            alpha=0.85
+        )
+        plt.colorbar(sc, label="-log10(FDR)")
+        plt.xlabel("Gene ratio")
+        plt.ylabel("")
+        plt.title(f"GO enrichment: {sweep_type}")
+        plt.tight_layout()
+
+        plt.savefig(f"{OUTDIR}/{prefix}_GO_bubble_real_background.png", dpi=300)
+        plt.savefig(f"{OUTDIR}/{prefix}_GO_bubble_real_background.pdf")
+        plt.close()
+
+    print("\n", sweep_type)
+    print("Selected genes:", len(selected_genes))
+    print("Saved:", out_tsv)
+    print(res.head(15)[["GO_category", "GO_term", "GO", "Selected_with_GO", "Odds_ratio", "FDR"]])
+PY
+
+#######################
+YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY
+
+#PFAM
+python plot_sv_pfam_domains.py
+XPCLRS_SV/annotation/pfam_plots/domestication_sv_top20_PFAM_domains.png
+XPCLRS_SV/annotation/pfam_plots/improvement_sv_top20_PFAM_domains.png
+######################################################################################################################
+cat > plot_sv_pfam_domains.py << 'PY'
+#!/usr/bin/env python3
+
+import pandas as pd
+from collections import Counter
+import matplotlib.pyplot as plt
+import os
+
+INFILE = "XPCLRS_SV/annotation/sv_xpclr_top1_functional_annotation_table.tsv"
+OUTDIR = "XPCLRS_SV/annotation/pfam_plots"
+
+os.makedirs(OUTDIR, exist_ok=True)
+
+df = pd.read_csv(INFILE, sep="\t")
+
+for sweep in df["Sweep_type"].unique():
+
+    sub = df[df["Sweep_type"] == sweep].copy()
+
+    pfams = []
+
+    for x in sub["Pfam_domain"].dropna():
+
+        if x == "-" or x == "":
+            continue
+
+        for p in str(x).split(","):
+            p = p.strip()
+            if p and p != "-":
+                pfams.append(p)
+
+    counts = Counter(pfams)
+
+    pfam_df = pd.DataFrame(
+        counts.items(),
+        columns=["PFAM", "Count"]
+    )
+
+    pfam_df = pfam_df.sort_values(
+        "Count",
+        ascending=False
+    )
+
+    pfam_df.to_csv(
+        f"{OUTDIR}/{sweep}_PFAM_counts.tsv",
+        sep="\t",
+        index=False
+    )
+
+    top = pfam_df.head(20).copy()
+
+    top = top.sort_values("Count")
+
+    plt.figure(figsize=(8,7))
+
+    plt.barh(
+        top["PFAM"],
+        top["Count"]
+    )
+
+    plt.xlabel("Gene count")
+    plt.ylabel("PFAM domain")
+    plt.title(f"Top PFAM domains: {sweep}")
+
+    plt.tight_layout()
+
+    prefix = sweep.lower()
+
+    plt.savefig(
+        f"{OUTDIR}/{prefix}_top20_PFAM_domains.png",
+        dpi=300
+    )
+
+    plt.savefig(
+        f"{OUTDIR}/{prefix}_top20_PFAM_domains.pdf"
+    )
+
+    plt.close()
+
+    print("\n", sweep)
+    print(top.sort_values("Count", ascending=False).head(10))
+
+print("\nDone.")
+PY
+####################
