@@ -1,1 +1,645 @@
+(soy_selection) [ jkitony@10.7.30.227:/data1/jkitony/soybean/Expression/SNPs ]$
+#Files needed from the beginning
+Merged_pangenie_multi-samples_Sep04_2025.vcf.gz
+xpclrs.sif                           # XPCLRS singularity image
+Wm82a5.gene_models_main.renamed.gff3
+Wm82a5.protein.renamed.faa
+PangenomeAll_vs_Wm82a5.gene_counts.tsv
+go-basic.obo                         # optional, for GO names
+Wild_type.txt
+Landrace.txt
+Cultivar.txt
+Meta.csv  # sample metadata with Ecotype
+cp /data1/jkitony/soybean/selection_sweeps/Merged_pangenie_multi-samples_Sep04_2025.vcf.gz .
+cp  /data1/jkitony/soybean/SNPs_selection_scan/Wild_type.txt .
+cp  /data1/jkitony/soybean/SNPs_selection_scan/Landrace.txt .
+cp  /data1/jkitony/soybean/SNPs_selection_scan/Cultivar.txt .
+cp  /data1/jkitony/soybean/SNPs_selection_scan/Meta.csv .
+cp  /data1/jkitony/soybean/SNPs_selection_scan/go-basic.obo .
+aws s3 cp s3://salk-tm-raw/reads/Gmax_MU-Wm82_PI518671/stringtie_isoseq_combined_Wm82a5/counts/PangenomeAll_vs_Wm82a5.stringtie.transcript_counts.tsv .
 
+Wm82a5.protein.renamed.faa
+05_annotation/domestication.top1.gene_ids.txt
+05_annotation/improvement.top1.gene_ids.txt
+go-basic.obo
+##############################################################################################################################################################
+#./01_filter_snps.sh
+##############################################################################################################################################################
+cat > 01_filter_snps.sh << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+VCF="Merged_pangenie_multi-samples_Sep04_2025.vcf.gz"
+OUTDIR="02_vcf"
+THREADS=45
+
+mkdir -p ${OUTDIR}
+
+echo "Extracting biallelic SNPs..."
+
+bcftools view \
+  --threads ${THREADS} \
+  -m2 -M2 -v snps \
+  ${VCF} \
+  -Oz \
+  -o ${OUTDIR}/soy.snp.bi.raw.vcf.gz
+
+tabix -p vcf ${OUTDIR}/soy.snp.bi.raw.vcf.gz
+
+echo "Filling tags..."
+
+bcftools +fill-tags \
+  ${OUTDIR}/soy.snp.bi.raw.vcf.gz \
+  -Oz \
+  -o ${OUTDIR}/soy.snp.bi.tags.vcf.gz \
+  -- -t MAF,F_MISSING,AC,AN
+
+tabix -p vcf ${OUTDIR}/soy.snp.bi.tags.vcf.gz
+
+echo "Filtering SNPs..."
+
+bcftools view \
+  --threads ${THREADS} \
+  -i 'MAF>=0.05 && F_MISSING<=0.2' \
+  ${OUTDIR}/soy.snp.bi.tags.vcf.gz \
+  -Oz \
+  -o ${OUTDIR}/soy.snp.bi.filt.vcf.gz
+
+tabix -p vcf ${OUTDIR}/soy.snp.bi.filt.vcf.gz
+
+bcftools query -l ${OUTDIR}/soy.snp.bi.filt.vcf.gz > ${OUTDIR}/vcf_samples.txt
+
+echo "Final SNP count:"
+bcftools view -H ${OUTDIR}/soy.snp.bi.filt.vcf.gz | wc -l
+
+echo "Done."
+EOF
+
+chmod +x 01_filter_snps.sh
+
+##############################################################################################################################################################
+#./02_run_xpclr_v5.sh
+##############################################################################################################################################################
+cat > 02_run_xpclr_v5.sh << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+VCF="02_vcf/soy.snp.bi.filt.vcf.gz"
+GFF="Wm82a5.gene_models_main.renamed.gff3"
+SIF="xpclrs.sif"
+
+WINDOW=100000
+STEP=10000
+MAXSNPS=250
+MINSNPS=10
+THREADS=45
+MERGE_DIST=100000
+TOP_Q=0.99
+
+CHRS="Chr01 Chr02 Chr03 Chr04 Chr05 Chr06 Chr07 Chr08 Chr09 Chr10 Chr11 Chr12 Chr13 Chr14 Chr15 Chr16 Chr17 Chr18 Chr19 Chr20"
+
+mkdir -p 04_xpclr/domestication 04_xpclr/improvement 04_xpclr/combined
+mkdir -p 05_annotation 04_xpclr/plots
+
+echo "Preparing gene-only GFF..."
+
+awk '$3=="gene"' ${GFF} > 05_annotation/Wm82a5.genes.gff3
+
+echo "Running domestication scan: Wild_type vs Landrace"
+
+for chr in ${CHRS}; do
+    singularity exec ${SIF} xpclrs \
+        --input ${VCF} \
+        --out 04_xpclr/domestication/${chr}.wild_vs_landrace.tsv \
+        --samplesA Wild_type.txt \
+        --samplesB Landrace.txt \
+        --chr ${chr} \
+        --size ${WINDOW} \
+        --step ${STEP} \
+        --maxsnps ${MAXSNPS} \
+        --minsnps ${MINSNPS} \
+        --threads ${THREADS} \
+        --format tsv
+done
+
+echo "Running improvement scan: Landrace vs Cultivar"
+
+for chr in ${CHRS}; do
+    singularity exec ${SIF} xpclrs \
+        --input ${VCF} \
+        --out 04_xpclr/improvement/${chr}.landrace_vs_cultivar.tsv \
+        --samplesA Landrace.txt \
+        --samplesB Cultivar.txt \
+        --chr ${chr} \
+        --size ${WINDOW} \
+        --step ${STEP} \
+        --maxsnps ${MAXSNPS} \
+        --minsnps ${MINSNPS} \
+        --threads ${THREADS} \
+        --format tsv
+done
+
+echo "Combining XP-CLR outputs..."
+
+awk 'FNR==1 && NR!=1 {next} {print}' 04_xpclr/domestication/*.xpclr \
+  > 04_xpclr/combined/domestication.full.tsv
+
+awk 'FNR==1 && NR!=1 {next} {print}' 04_xpclr/improvement/*.xpclr \
+  > 04_xpclr/combined/improvement.full.tsv
+
+echo "Done XP-CLR."
+EOF
+
+chmod +x 02_run_xpclr_v5.sh
+##############################################################################################################################################################
+3. Plot XP-CLR and extract top 1%
+python plot_xpclr_manhattan.py \
+  --infile 04_xpclr/combined/domestication.full.tsv \
+  --outfile_prefix 04_xpclr/plots/domestication_XPCLR \
+  --title "Domestication XP-CLR: Wild type vs Landrace"
+
+python plot_xpclr_manhattan.py \
+  --infile 04_xpclr/combined/improvement.full.tsv \
+  --outfile_prefix 04_xpclr/plots/improvement_XPCLR \
+  --title "Improvement XP-CLR: Landrace vs Cultivar"
+##############################################################################################################################################################
+cat > plot_xpclr_manhattan.py << 'EOF'
+#!/usr/bin/env python3
+
+import argparse
+import pandas as pd
+import matplotlib.pyplot as plt
+import re
+
+def chr_sort_key(chrom):
+    m = re.search(r"(\d+)", str(chrom))
+    return int(m.group(1)) if m else 999
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--infile", required=True)
+    parser.add_argument("--outfile_prefix", required=True)
+    parser.add_argument("--title", required=True)
+    parser.add_argument("--top_quantile", type=float, default=0.99)
+    args = parser.parse_args()
+
+    df = pd.read_csv(args.infile, sep="\t")
+
+    required = {"chrom", "start", "stop", "xpclr"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Missing columns: {missing}")
+
+    df["chrom"] = df["chrom"].astype(str)
+    df["start"] = pd.to_numeric(df["start"], errors="coerce")
+    df["stop"] = pd.to_numeric(df["stop"], errors="coerce")
+    df["xpclr"] = pd.to_numeric(df["xpclr"], errors="coerce")
+    df = df.dropna(subset=["chrom", "start", "stop", "xpclr"])
+
+    df["midpoint"] = (df["start"] + df["stop"]) / 2
+
+    parts = []
+    tick_pos = []
+    tick_lab = []
+    offset = 0
+
+    for chrom in sorted(df["chrom"].unique(), key=chr_sort_key):
+        d = df[df["chrom"] == chrom].sort_values("midpoint").copy()
+        d["BPcum"] = d["midpoint"] + offset
+        parts.append(d)
+        tick_pos.append(d["BPcum"].median())
+        tick_lab.append(chrom.replace("Chr", ""))
+        offset = d["BPcum"].max()
+
+    plot_df = pd.concat(parts, ignore_index=True)
+
+    thr_top = plot_df["xpclr"].quantile(args.top_quantile)
+    thr_95 = plot_df["xpclr"].quantile(0.95)
+
+    top_df = df[df["xpclr"] >= thr_top].copy()
+    top_df.to_csv(f"{args.outfile_prefix}.top1.full.tsv", sep="\t", index=False)
+
+    plt.figure(figsize=(16, 5))
+
+    for chrom in sorted(plot_df["chrom"].unique(), key=chr_sort_key):
+        d = plot_df[plot_df["chrom"] == chrom]
+        plt.scatter(d["BPcum"], d["xpclr"], s=7, alpha=0.75)
+
+    plt.axhline(thr_top, linestyle="--", linewidth=1, label=f"Top 1% = {thr_top:.3f}")
+    plt.axhline(thr_95, linestyle=":", linewidth=1, label=f"Top 5% = {thr_95:.3f}")
+
+    plt.xticks(tick_pos, tick_lab, fontsize=9)
+    plt.xlabel("Chromosome")
+    plt.ylabel("XP-CLR score")
+    plt.title(args.title)
+    plt.legend(frameon=False)
+    plt.tight_layout()
+
+    plt.savefig(f"{args.outfile_prefix}.manhattan.png", dpi=300)
+    plt.savefig(f"{args.outfile_prefix}.manhattan.pdf")
+    plt.close()
+
+    print(f"Top 1% threshold: {thr_top}")
+    print(f"Top 5% threshold: {thr_95}")
+
+if __name__ == "__main__":
+    main()
+EOF
+##############################################################################################################################################################
+4. Extract genes from top sweep windows
+./03_extract_sweep_genes_v5.sh
+#######################
+7. Write summary table...
+Category        Count
+Domestication_top1_sweep_regions        350
+Improvement_top1_sweep_regions  571
+Domestication_top1_genes        4454
+Improvement_top1_genes  5147
+Shared_top1_genes       417
+
+##############################################################################################################################################################
+cat > 03_extract_sweep_genes_v5.sh << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+GENE_GFF="05_annotation/Wm82a5.genes.gff3"
+MERGE_DIST=100000
+OUTDIR="05_annotation"
+
+mkdir -p ${OUTDIR}
+
+echo "Using gene GFF: ${GENE_GFF}"
+echo "GFF chromosome names look like:"
+cut -f1 ${GENE_GFF} | grep -v "^#" | sort -u | head
+
+for scan in domestication improvement
+do
+    echo
+    echo "======================================"
+    echo "Processing ${scan}"
+    echo "======================================"
+
+    TOP_WINDOWS="04_xpclr/plots/${scan}_XPCLR.top1.full.tsv"
+
+    if [[ ! -s ${TOP_WINDOWS} ]]; then
+        echo "ERROR: Missing ${TOP_WINDOWS}"
+        exit 1
+    fi
+
+    echo "1. Convert top XP-CLR windows to BED..."
+
+    awk 'BEGIN{OFS="\t"} NR>1 {
+        print $1, $2, $3, $11
+    }' ${TOP_WINDOWS} \
+    > ${OUTDIR}/${scan}.top1.bed
+
+    echo "2. Sort and merge nearby sweep windows..."
+
+    bedtools sort -i ${OUTDIR}/${scan}.top1.bed | \
+    bedtools merge -d ${MERGE_DIST} -c 4 -o max \
+    > ${OUTDIR}/${scan}.top1.merged.bed
+
+    echo "3. Convert XP-CLR chromosome names to Wm82 gnm5 GFF names..."
+
+    awk 'BEGIN{OFS="\t"} {
+        chr=$1
+
+        # Chr01 -> glyma.Wm82.gnm5.Chr01
+        if(chr ~ /^Chr[0-9]+$/){
+            chr="glyma.Wm82.gnm5." chr
+        }
+
+        print chr, $2, $3, $4
+    }' ${OUTDIR}/${scan}.top1.merged.bed \
+    > ${OUTDIR}/${scan}.top1.merged.gnm5chr.bed
+
+    echo "BED chromosome names after conversion:"
+    cut -f1 ${OUTDIR}/${scan}.top1.merged.gnm5chr.bed | sort -u | head
+
+    echo "4. Intersect sweep regions with Wm82a5 genes..."
+
+    bedtools intersect \
+        -a ${GENE_GFF} \
+        -b ${OUTDIR}/${scan}.top1.merged.gnm5chr.bed \
+        -wa -wb \
+    > ${OUTDIR}/${scan}.top1.selected_genes.tsv
+
+    echo "5. Extract Wm82a5 gene IDs..."
+
+    awk -F'\t' '
+    {
+        split($9,a,";")
+        for(i in a){
+            if(a[i] ~ /^ID=/){
+                gsub("ID=","",a[i])
+                print a[i]
+            }
+        }
+    }' ${OUTDIR}/${scan}.top1.selected_genes.tsv | \
+    sort -u \
+    > ${OUTDIR}/${scan}.top1.gene_ids.txt
+
+    echo "${scan} merged sweep regions:"
+    wc -l ${OUTDIR}/${scan}.top1.merged.bed
+
+    echo "${scan} selected genes:"
+    wc -l ${OUTDIR}/${scan}.top1.gene_ids.txt
+
+done
+
+echo
+echo "6. Find shared genes between domestication and improvement..."
+
+comm -12 \
+    <(sort ${OUTDIR}/domestication.top1.gene_ids.txt) \
+    <(sort ${OUTDIR}/improvement.top1.gene_ids.txt) \
+> ${OUTDIR}/shared_domestication_improvement.top1.genes.txt
+
+echo
+echo "7. Write summary table..."
+
+{
+echo -e "Category\tCount"
+echo -e "Domestication_top1_sweep_regions\t$(wc -l < ${OUTDIR}/domestication.top1.merged.bed)"
+echo -e "Improvement_top1_sweep_regions\t$(wc -l < ${OUTDIR}/improvement.top1.merged.bed)"
+echo -e "Domestication_top1_genes\t$(wc -l < ${OUTDIR}/domestication.top1.gene_ids.txt)"
+echo -e "Improvement_top1_genes\t$(wc -l < ${OUTDIR}/improvement.top1.gene_ids.txt)"
+echo -e "Shared_top1_genes\t$(wc -l < ${OUTDIR}/shared_domestication_improvement.top1.genes.txt)"
+} > ${OUTDIR}/xpclr_top1_summary.tsv
+
+cat ${OUTDIR}/xpclr_top1_summary.tsv
+
+echo
+echo "Done."
+EOF
+
+chmod +x 03_extract_sweep_genes_v5.sh
+
+##############################################################################################################################################################
+5. Extract proteins from renamed Wm82a5 protein FASTA
+./04_extract_sweep_proteins_v5.sh
+##############################################################################################################################################################
+cat > 04_extract_sweep_proteins_v5.sh << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROTEIN_FA="Wm82a5.protein.renamed.faa"
+ANN_DIR="05_annotation"
+
+for scan in domestication improvement; do
+    echo "Processing ${scan}..."
+
+    GENE_IDS="${ANN_DIR}/${scan}.top1.gene_ids.txt"
+    PATTERNS="${ANN_DIR}/${scan}.top1.protein_patterns.txt"
+    ALL_PROTEINS="${ANN_DIR}/${scan}.top1.proteins.all_isoforms.fa"
+    ONE_ISOFORM="${ANN_DIR}/${scan}.top1.proteins.one_isoform.fa"
+
+    awk '{print "gene="$1}' ${GENE_IDS} > ${PATTERNS}
+
+    seqkit grep -n -r -f ${PATTERNS} ${PROTEIN_FA} > ${ALL_PROTEINS}
+
+    python - ${ALL_PROTEINS} ${ONE_ISOFORM} << 'PY'
+import sys
+import re
+
+infile = sys.argv[1]
+outfile = sys.argv[2]
+
+seen = set()
+write = False
+
+with open(infile) as fin, open(outfile, "w") as fout:
+    for line in fin:
+        if line.startswith(">"):
+            header = line.strip()
+            m = re.search(r"gene=([^\s]+)", header)
+
+            if not m:
+                write = False
+                continue
+
+            gene = m.group(1)
+
+            if gene in seen:
+                write = False
+            else:
+                seen.add(gene)
+                write = True
+                fout.write(line)
+        else:
+            if write:
+                fout.write(line)
+PY
+
+    echo "${scan} gene IDs:"
+    wc -l ${GENE_IDS}
+
+    echo "${scan} all protein isoforms:"
+    grep -c "^>" ${ALL_PROTEINS} || true
+
+    echo "${scan} one isoform per gene:"
+    grep -c "^>" ${ONE_ISOFORM} || true
+done
+EOF
+
+chmod +x 04_extract_sweep_proteins_v5.sh
+##############################################################################################################################################################
+5. Extract proteins from renamed Wm82a5 protein FASTA
+mamba activate eggnog_env
+./05_run_eggnog_v5.sh
+##############################################################################################################################################################
+cat > 05_run_eggnog_v5.sh << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+EGGNOG_DB="/data1/jkitony/Baobab/eggnog/eggnog-mapper/eggnog_data"
+CPU=45
+
+mkdir -p 06_eggnog/domestication 06_eggnog/improvement
+
+emapper.py \
+  -i 05_annotation/domestication.top1.proteins.one_isoform.fa \
+  --itype proteins \
+  --output domestication_top1 \
+  --output_dir 06_eggnog/domestication \
+  --data_dir ${EGGNOG_DB} \
+  --cpu ${CPU}
+
+emapper.py \
+  -i 05_annotation/improvement.top1.proteins.one_isoform.fa \
+  --itype proteins \
+  --output improvement_top1 \
+  --output_dir 06_eggnog/improvement \
+  --data_dir ${EGGNOG_DB} \
+  --cpu ${CPU}
+EOF
+
+chmod +x 05_run_eggnog_v5.sh
+
+##############################################################################################################################################################
+7. Build functional annotation table
+##############################################################################################################################################################
+cat > 06_make_function_table_v5.py << 'EOF'
+#!/usr/bin/env python3
+
+import pandas as pd
+import re
+from pathlib import Path
+
+files = {
+    "Domestication": "06_eggnog/domestication/domestication_top1.emapper.annotations",
+    "Improvement": "06_eggnog/improvement/improvement_top1.emapper.annotations",
+}
+
+outdir = Path("05_annotation")
+outdir.mkdir(exist_ok=True)
+
+def read_emapper(path):
+    header = None
+    with open(path) as f:
+        for line in f:
+            if line.startswith("#query"):
+                header = line.strip().lstrip("#").split("\t")
+                break
+
+    df = pd.read_csv(path, sep="\t", comment="#", header=None)
+
+    if header is not None and len(header) == df.shape[1]:
+        df.columns = header
+
+    return df
+
+tables = []
+
+for sweep_type, path in files.items():
+    df = read_emapper(path)
+
+    keep = {
+        "query": "Protein_ID",
+        "Description": "Description",
+        "GOs": "GO_terms",
+        "PFAMs": "Pfam_domain",
+        "KEGG_Pathway": "KEGG_pathway",
+        "KEGG_ko": "KEGG_ortholog",
+        "COG_category": "COG_category",
+        "Preferred_name": "Preferred_name",
+    }
+
+    available = [c for c in keep if c in df.columns]
+    out = df[available].copy()
+    out = out.rename(columns=keep)
+
+    out["Gene_ID"] = out["Protein_ID"].astype(str).str.extract(
+        r"(Gmax_Wm82a5\.Chr\d+\.g\d+)"
+    )
+
+    out["Sweep_type"] = sweep_type
+    tables.append(out)
+
+final = pd.concat(tables, ignore_index=True)
+
+cols = [
+    "Gene_ID",
+    "Protein_ID",
+    "Preferred_name",
+    "Description",
+    "GO_terms",
+    "Pfam_domain",
+    "KEGG_pathway",
+    "KEGG_ortholog",
+    "COG_category",
+    "Sweep_type",
+]
+
+final = final[[c for c in cols if c in final.columns]]
+
+outfile = outdir / "xpclr_top1_functional_annotation_table.tsv"
+final.to_csv(outfile, sep="\t", index=False)
+
+print(f"Saved: {outfile}")
+print(final["Sweep_type"].value_counts())
+EOF
+##############################################################################################################################################################
+7. Build functional annotation table
+python 06_make_function_table_v5.py
+##############################################################################################################################################################
+cat > 06_make_function_table_v5.py << 'EOF'
+#!/usr/bin/env python3
+
+import pandas as pd
+import re
+from pathlib import Path
+
+files = {
+    "Domestication": "06_eggnog/domestication/domestication_top1.emapper.annotations",
+    "Improvement": "06_eggnog/improvement/improvement_top1.emapper.annotations",
+}
+
+outdir = Path("05_annotation")
+outdir.mkdir(exist_ok=True)
+
+def read_emapper(path):
+    header = None
+    with open(path) as f:
+        for line in f:
+            if line.startswith("#query"):
+                header = line.strip().lstrip("#").split("\t")
+                break
+
+    df = pd.read_csv(path, sep="\t", comment="#", header=None)
+
+    if header is not None and len(header) == df.shape[1]:
+        df.columns = header
+
+    return df
+
+tables = []
+
+for sweep_type, path in files.items():
+    df = read_emapper(path)
+
+    keep = {
+        "query": "Protein_ID",
+        "Description": "Description",
+        "GOs": "GO_terms",
+        "PFAMs": "Pfam_domain",
+        "KEGG_Pathway": "KEGG_pathway",
+        "KEGG_ko": "KEGG_ortholog",
+        "COG_category": "COG_category",
+        "Preferred_name": "Preferred_name",
+    }
+
+    available = [c for c in keep if c in df.columns]
+    out = df[available].copy()
+    out = out.rename(columns=keep)
+
+    out["Gene_ID"] = out["Protein_ID"].astype(str).str.extract(
+        r"(Gmax_Wm82a5\.Chr\d+\.g\d+)"
+    )
+
+    out["Sweep_type"] = sweep_type
+    tables.append(out)
+
+final = pd.concat(tables, ignore_index=True)
+
+cols = [
+    "Gene_ID",
+    "Protein_ID",
+    "Preferred_name",
+    "Description",
+    "GO_terms",
+    "Pfam_domain",
+    "KEGG_pathway",
+    "KEGG_ortholog",
+    "COG_category",
+    "Sweep_type",
+]
+
+final = final[[c for c in cols if c in final.columns]]
+
+outfile = outdir / "xpclr_top1_functional_annotation_table.tsv"
+final.to_csv(outfile, sep="\t", index=False)
+
+print(f"Saved: {outfile}")
+print(final["Sweep_type"].value_counts())
+EOF
