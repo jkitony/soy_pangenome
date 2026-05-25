@@ -444,58 +444,127 @@ EOF
 
 chmod +x 04_extract_sweep_proteins_v5.sh
 ##############################################################################################################################################################
-5. Extract proteins from renamed Wm82a5 protein FASTA
+./04_extract_sweep_proteins_v5.sh
 mamba activate eggnog_env
-./05_run_eggnog_v5.sh
+./05_make_wm82a5_background_proteins.sh
+##
+Whole-genome one-isoform protein background:
+58287
+
 ##############################################################################################################################################################
-cat > 05_run_eggnog_v5.sh << 'EOF'
+cat > 05_make_wm82a5_background_proteins.sh << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROTEIN_FA="Wm82a5.protein.renamed.faa"
+OUTDIR="06_eggnog/background"
+OUTFA="${OUTDIR}/Wm82a5_all_genes.one_isoform.fa"
+
+mkdir -p ${OUTDIR}
+
+python - ${PROTEIN_FA} ${OUTFA} << 'PY'
+import sys
+import re
+
+infile = sys.argv[1]
+outfile = sys.argv[2]
+
+seen = set()
+write = False
+
+with open(infile) as fin, open(outfile, "w") as fout:
+    for line in fin:
+        if line.startswith(">"):
+            header = line.strip()
+            m = re.search(r"gene=([^\s]+)", header)
+
+            if m:
+                gene = m.group(1)
+            else:
+                # fallback: remove isoform suffix from protein ID
+                gene = header[1:].split()[0]
+                gene = re.sub(r"\.\d+$", "", gene)
+
+            if gene not in seen:
+                seen.add(gene)
+                write = True
+                fout.write(line)
+            else:
+                write = False
+        else:
+            if write:
+                fout.write(line)
+PY
+
+echo "Whole-genome one-isoform protein background:"
+grep -c "^>" ${OUTFA}
+echo "Saved: ${OUTFA}"
+EOF
+
+chmod +x 05_make_wm82a5_background_proteins.sh
+
+##############################################################################################################################################################
+mamba activate eggnog_env
+./06_run_eggnog_background_v5.sh
+
+##############################################################################################################################################################
+cat > 06_run_eggnog_background_v5.sh << 'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
 EGGNOG_DB="/data1/jkitony/Baobab/eggnog/eggnog-mapper/eggnog_data"
 CPU=45
 
-mkdir -p 06_eggnog/domestication 06_eggnog/improvement
+mkdir -p 06_eggnog/background
 
 emapper.py \
-  -i 05_annotation/domestication.top1.proteins.one_isoform.fa \
+  -i 06_eggnog/background/Wm82a5_all_genes.one_isoform.fa \
   --itype proteins \
-  --output domestication_top1 \
-  --output_dir 06_eggnog/domestication \
+  --output Wm82a5_background \
+  --output_dir 06_eggnog/background \
   --data_dir ${EGGNOG_DB} \
   --cpu ${CPU}
 
-emapper.py \
-  -i 05_annotation/improvement.top1.proteins.one_isoform.fa \
-  --itype proteins \
-  --output improvement_top1 \
-  --output_dir 06_eggnog/improvement \
-  --data_dir ${EGGNOG_DB} \
-  --cpu ${CPU}
+echo "Done background eggNOG."
 EOF
 
-chmod +x 05_run_eggnog_v5.sh
+chmod +x 06_run_eggnog_background_v5.sh
 
 ##############################################################################################################################################################
-7. Build functional annotation table
+#GO enrichment analysis
+mamba activate goenv
+python 09_go_enrichment_real_background_v5.py
 ##############################################################################################################################################################
-cat > 06_make_function_table_v5.py << 'EOF'
+cat > 09_go_enrichment_real_background_v5.py << 'EOF'
 #!/usr/bin/env python3
 
 import pandas as pd
-import re
+import numpy as np
+from scipy.stats import fisher_exact
+from statsmodels.stats.multitest import multipletests
+from collections import defaultdict
+from goatools.obo_parser import GODag
+import matplotlib.pyplot as plt
 from pathlib import Path
+import re
 
-files = {
+GO_OBO = "go-basic.obo"
+
+BACKGROUND = "06_eggnog/background/Wm82a5_background.emapper.annotations"
+
+SELECTED = {
     "Domestication": "06_eggnog/domestication/domestication_top1.emapper.annotations",
     "Improvement": "06_eggnog/improvement/improvement_top1.emapper.annotations",
 }
 
-outdir = Path("05_annotation")
-outdir.mkdir(exist_ok=True)
+OUTDIR = Path("07_go")
+OUTDIR.mkdir(exist_ok=True)
+
+go = GODag(GO_OBO)
 
 def read_emapper(path):
     header = None
+
     with open(path) as f:
         for line in f:
             if line.startswith("#query"):
@@ -506,140 +575,392 @@ def read_emapper(path):
 
     if header is not None and len(header) == df.shape[1]:
         df.columns = header
+    else:
+        raise ValueError(f"Could not parse eggNOG header from {path}")
 
     return df
 
-tables = []
+def extract_gene_id(query):
+    q = str(query)
 
-for sweep_type, path in files.items():
+    m = re.search(r"(Gmax_Wm82a5\.Chr\d+\.g\d+)", q)
+    if m:
+        return m.group(1)
+
+    m = re.search(r"gene=(Gmax_Wm82a5\.Chr\d+\.g\d+)", q)
+    if m:
+        return m.group(1)
+
+    q = q.split()[0]
+    q = re.sub(r"\.\d+$", "", q)
+    return q
+
+def parse_go(x):
+    return set(g.strip() for g in str(x).split(",") if g.startswith("GO:"))
+
+def load_annotated_emapper(path):
     df = read_emapper(path)
 
-    keep = {
-        "query": "Protein_ID",
-        "Description": "Description",
-        "GOs": "GO_terms",
-        "PFAMs": "Pfam_domain",
-        "KEGG_Pathway": "KEGG_pathway",
-        "KEGG_ko": "KEGG_ortholog",
-        "COG_category": "COG_category",
-        "Preferred_name": "Preferred_name",
-    }
+    df = df[df["GOs"].notna()].copy()
+    df = df[df["GOs"] != "-"].copy()
 
-    available = [c for c in keep if c in df.columns]
-    out = df[available].copy()
-    out = out.rename(columns=keep)
+    df["Gene_ID"] = df["query"].apply(extract_gene_id)
+    df["GO_set"] = df["GOs"].apply(parse_go)
 
-    out["Gene_ID"] = out["Protein_ID"].astype(str).str.extract(
-        r"(Gmax_Wm82a5\.Chr\d+\.g\d+)"
+    df = df[df["Gene_ID"].notna()]
+    df = df[df["GO_set"].map(len) > 0]
+
+    return df
+
+def namespace_short(ns):
+    if ns == "biological_process":
+        return "BP"
+    if ns == "molecular_function":
+        return "MF"
+    if ns == "cellular_component":
+        return "CC"
+    return ns
+
+background = load_annotated_emapper(BACKGROUND)
+
+bg_genes = set(background["Gene_ID"])
+
+go_to_bg = defaultdict(set)
+
+for _, row in background.iterrows():
+    for go_id in row["GO_set"]:
+        go_to_bg[go_id].add(row["Gene_ID"])
+
+print(f"Background genes with GO: {len(bg_genes)}")
+print(f"Background GO terms: {len(go_to_bg)}")
+
+for sweep_type, path in SELECTED.items():
+
+    selected = load_annotated_emapper(path)
+    sel_genes = set(selected["Gene_ID"])
+
+    print(f"\n{sweep_type} selected genes with GO: {len(sel_genes)}")
+
+    rows = []
+
+    for go_id, bg_go_genes in go_to_bg.items():
+
+        a = len(sel_genes & bg_go_genes)
+        b = len(sel_genes - bg_go_genes)
+        c = len((bg_genes - sel_genes) & bg_go_genes)
+        d = len((bg_genes - sel_genes) - bg_go_genes)
+
+        if a < 3:
+            continue
+
+        odds, p = fisher_exact([[a, b], [c, d]], alternative="greater")
+
+        if go_id in go:
+            term = go[go_id].name
+            cat = namespace_short(go[go_id].namespace)
+        else:
+            term = "NA"
+            cat = "NA"
+
+        rows.append({
+            "GO_category": cat,
+            "GO_term": term,
+            "GO": go_id,
+            "Selected_with_GO": a,
+            "Selected_total": len(sel_genes),
+            "Background_with_GO": len(bg_go_genes),
+            "Background_total": len(bg_genes),
+            "Odds_ratio": odds,
+            "P_value": p,
+            "Gene_ratio": a / len(sel_genes),
+            "Bg_ratio": len(bg_go_genes) / len(bg_genes),
+            "Sweep_type": sweep_type
+        })
+
+    res = pd.DataFrame(rows)
+
+    if res.empty:
+        print(f"No enriched GO terms found for {sweep_type}")
+        continue
+
+    res["FDR"] = multipletests(res["P_value"], method="fdr_bh")[1]
+    res["minus_log10_FDR"] = -np.log10(
+        res["FDR"].replace(0, np.nextafter(0, 1))
     )
 
-    out["Sweep_type"] = sweep_type
-    tables.append(out)
+    res = res.sort_values(["FDR", "P_value"])
 
-final = pd.concat(tables, ignore_index=True)
+    out_tsv = OUTDIR / f"{sweep_type.lower()}_GO_enrichment_real_background.tsv"
+    res.to_csv(out_tsv, sep="\t", index=False)
 
-cols = [
-    "Gene_ID",
-    "Protein_ID",
-    "Preferred_name",
-    "Description",
-    "GO_terms",
-    "Pfam_domain",
-    "KEGG_pathway",
-    "KEGG_ortholog",
-    "COG_category",
-    "Sweep_type",
-]
+    print(res.head(20)[[
+        "GO_category",
+        "GO_term",
+        "GO",
+        "Selected_with_GO",
+        "Odds_ratio",
+        "FDR"
+    ]])
 
-final = final[[c for c in cols if c in final.columns]]
+    plot_df = res[
+        (res["FDR"] < 0.05) &
+        (res["GO_term"] != "NA")
+    ].copy()
 
-outfile = outdir / "xpclr_top1_functional_annotation_table.tsv"
-final.to_csv(outfile, sep="\t", index=False)
+    if plot_df.empty:
+        plot_df = res.head(25).copy()
+    else:
+        plot_df = plot_df.head(25).copy()
 
-print(f"Saved: {outfile}")
-print(final["Sweep_type"].value_counts())
+    plot_df["Label"] = plot_df["GO_term"] + " (" + plot_df["GO"] + ")"
+    plot_df = plot_df.sort_values("minus_log10_FDR")
+
+    plt.figure(figsize=(10, max(6, 0.35 * len(plot_df))))
+
+    sc = plt.scatter(
+        plot_df["Gene_ratio"],
+        plot_df["Label"],
+        s=plot_df["Selected_with_GO"] * 10,
+        c=plot_df["minus_log10_FDR"],
+        alpha=0.8
+    )
+
+    plt.colorbar(sc, label="-log10(FDR)")
+    plt.xlabel("Gene ratio")
+    plt.ylabel("")
+    plt.title(f"GO enrichment: {sweep_type}")
+    plt.tight_layout()
+
+    png = OUTDIR / f"{sweep_type.lower()}_GO_bubble_real_background.png"
+    pdf = OUTDIR / f"{sweep_type.lower()}_GO_bubble_real_background.pdf"
+
+    plt.savefig(png, dpi=300)
+    plt.savefig(pdf)
+    plt.close()
+
+    print(f"Saved: {out_tsv}")
+    print(f"Saved: {png}")
 EOF
+
 ##############################################################################################################################################################
-7. Build functional annotation table
-python 06_make_function_table_v5.py
+#curated GO table
+python 10_make_curated_go_tables_and_plots_v5.py
+
 ##############################################################################################################################################################
-cat > 06_make_function_table_v5.py << 'EOF'
+cat > 10_make_curated_go_tables_and_plots_v5.py << 'EOF'
 #!/usr/bin/env python3
 
 import pandas as pd
-import re
+import matplotlib.pyplot as plt
 from pathlib import Path
 
-files = {
-    "Domestication": "06_eggnog/domestication/domestication_top1.emapper.annotations",
-    "Improvement": "06_eggnog/improvement/improvement_top1.emapper.annotations",
+GO_DIR = Path("07_go")
+ANNOT_DIR = Path("05_annotation")
+
+ANNOT_TABLE = ANNOT_DIR / "xpclr_top1_functional_annotation_table.tsv"
+
+GO_FILES = {
+    "domestication": GO_DIR / "domestication_GO_enrichment_real_background.tsv",
+    "improvement": GO_DIR / "improvement_GO_enrichment_real_background.tsv",
 }
 
-outdir = Path("05_annotation")
-outdir.mkdir(exist_ok=True)
-
-def read_emapper(path):
-    header = None
-    with open(path) as f:
-        for line in f:
-            if line.startswith("#query"):
-                header = line.strip().lstrip("#").split("\t")
-                break
-
-    df = pd.read_csv(path, sep="\t", comment="#", header=None)
-
-    if header is not None and len(header) == df.shape[1]:
-        df.columns = header
-
-    return df
-
-tables = []
-
-for sweep_type, path in files.items():
-    df = read_emapper(path)
-
-    keep = {
-        "query": "Protein_ID",
-        "Description": "Description",
-        "GOs": "GO_terms",
-        "PFAMs": "Pfam_domain",
-        "KEGG_Pathway": "KEGG_pathway",
-        "KEGG_ko": "KEGG_ortholog",
-        "COG_category": "COG_category",
-        "Preferred_name": "Preferred_name",
-    }
-
-    available = [c for c in keep if c in df.columns]
-    out = df[available].copy()
-    out = out.rename(columns=keep)
-
-    out["Gene_ID"] = out["Protein_ID"].astype(str).str.extract(
-        r"(Gmax_Wm82a5\.Chr\d+\.g\d+)"
-    )
-
-    out["Sweep_type"] = sweep_type
-    tables.append(out)
-
-final = pd.concat(tables, ignore_index=True)
-
-cols = [
-    "Gene_ID",
-    "Protein_ID",
-    "Preferred_name",
-    "Description",
-    "GO_terms",
-    "Pfam_domain",
-    "KEGG_pathway",
-    "KEGG_ortholog",
-    "COG_category",
-    "Sweep_type",
+EXCLUDE_KEYWORDS = [
+    "blood", "arterial", "angiogenesis", "vessel endothelial",
+    "mating projection", "fungal-type", "septum digestion",
+    "primary cell septum", "division septum",
+    "animal", "embryonic placenta", "neuron", "muscle",
 ]
 
-final = final[[c for c in cols if c in final.columns]]
+KEEP_KEYWORDS = [
+    "root", "seed", "flower", "floral", "germination", "dormancy",
+    "cell wall", "glucan", "pectin", "cellulose", "lignin", "xylan",
+    "shatter", "dehiscence", "abscission",
+    "defense", "immune", "biotic", "pathogen",
+    "oxidative", "reactive oxygen", "redox",
+    "abiotic", "salt", "drought", "water", "cold", "heat",
+    "transport", "transmembrane", "ion", "metal", "manganese",
+    "photosynthesis", "chlorophyll", "carbon", "carbohydrate",
+    "lipid", "fatty acid", "oil",
+    "hormone", "auxin", "gibberellin", "abscisic acid", "ethylene",
+    "jasmonic", "salicylic", "cytokinin",
+    "symbiosome", "peribacteroid", "bacteroid", "nodulation", "nitrogen",
+    "cell division", "cell cycle", "cytokinesis",
+    "transcription", "dna-binding", "kinase", "phosphorylation",
+    "membrane", "vacuolar", "plasma membrane",
+    "glucosidase", "glycoside", "glucosinolate",
+    "methyltransferase", "oxidoreductase",
+]
 
-outfile = outdir / "xpclr_top1_functional_annotation_table.tsv"
-final.to_csv(outfile, sep="\t", index=False)
+def is_plant_relevant(term):
+    if pd.isna(term):
+        return False
 
-print(f"Saved: {outfile}")
-print(final["Sweep_type"].value_counts())
+    t = str(term).lower()
+
+    if t == "na":
+        return False
+
+    if any(k in t for k in EXCLUDE_KEYWORDS):
+        return False
+
+    return any(k in t for k in KEEP_KEYWORDS)
+
+def functional_interpretation(term):
+    t = str(term).lower()
+
+    if any(k in t for k in ["symbiosome", "peribacteroid", "bacteroid", "nodulation", "nitrogen"]):
+        return "Legume-rhizobia symbiosis and biological nitrogen fixation"
+    if any(k in t for k in ["cell wall", "glucan", "pectin", "cellulose", "lignin", "xylan"]):
+        return "Cell wall remodeling related to growth, architecture, and pod/seed traits"
+    if any(k in t for k in ["seed", "germination", "dormancy"]):
+        return "Seed development, dormancy, and domestication-related seed traits"
+    if any(k in t for k in ["flower", "floral", "photoperiod", "circadian"]):
+        return "Flowering time, maturity, and adaptation"
+    if any(k in t for k in ["defense", "immune", "pathogen", "biotic"]):
+        return "Defense response and biotic stress adaptation"
+    if any(k in t for k in ["oxidative", "reactive oxygen", "redox", "oxidoreductase"]):
+        return "Oxidative stress response and redox homeostasis"
+    if any(k in t for k in ["transport", "transmembrane", "ion", "metal", "manganese"]):
+        return "Membrane transport, nutrient uptake, and ion homeostasis"
+    if any(k in t for k in ["lipid", "fatty acid", "oil"]):
+        return "Lipid metabolism and seed composition"
+    if any(k in t for k in ["photosynthesis", "chlorophyll", "carbon", "carbohydrate"]):
+        return "Carbon metabolism, photosynthesis, and biomass production"
+    if any(k in t for k in ["hormone", "auxin", "gibberellin", "abscisic acid", "ethylene", "jasmonic", "salicylic"]):
+        return "Hormone signaling controlling growth, stress response, and adaptation"
+    if any(k in t for k in ["cell division", "cell cycle", "cytokinesis"]):
+        return "Cell proliferation and developmental growth"
+    if any(k in t for k in ["transcription", "dna-binding"]):
+        return "Transcriptional regulation of development and adaptation"
+    if any(k in t for k in ["kinase", "phosphorylation"]):
+        return "Signaling pathways involved in growth and stress response"
+    if any(k in t for k in ["glucosidase", "glycoside", "glucosinolate"]):
+        return "Secondary metabolism, defense, and cell wall/metabolic remodeling"
+
+    return "Plant-relevant selected function"
+
+def make_bubble(df, scan, outfile_prefix, topn=20):
+    if df.empty:
+        print(f"No curated GO terms for {scan}")
+        return
+
+    plot_df = df.sort_values(["FDR", "P_value"]).head(topn)
+    plot_df = plot_df.sort_values("minus_log10_FDR")
+    plot_df["Label"] = plot_df["GO_term"] + " (" + plot_df["GO"] + ")"
+
+    plt.figure(figsize=(10, max(6, 0.35 * len(plot_df))))
+
+    sc = plt.scatter(
+        plot_df["Gene_ratio"],
+        plot_df["Label"],
+        s=plot_df["Selected_with_GO"] * 12,
+        c=plot_df["minus_log10_FDR"],
+        alpha=0.85
+    )
+
+    plt.colorbar(sc, label="-log10(FDR)")
+    plt.xlabel("Gene ratio")
+    plt.ylabel("")
+    plt.title(f"Plant-relevant GO enrichment: {scan.capitalize()}")
+    plt.tight_layout()
+
+    plt.savefig(f"{outfile_prefix}.png", dpi=300)
+    plt.savefig(f"{outfile_prefix}.pdf")
+    plt.close()
+
+def extract_genes_for_go_terms():
+    if not ANNOT_TABLE.exists():
+        print(f"Skipping candidate extraction. Missing {ANNOT_TABLE}")
+        return
+
+    annot = pd.read_csv(ANNOT_TABLE, sep="\t")
+
+    targets = {
+        "symbiosome_peribacteroid": ["GO:0043659", "GO:0043661", "GO:0043660"],
+    }
+
+    for name, go_ids in targets.items():
+        pattern = "|".join(go_ids)
+
+        sub = annot[
+            annot["GO_terms"].fillna("").str.contains(pattern, regex=True)
+        ].copy()
+
+        out = ANNOT_DIR / f"{name}_candidate_genes.tsv"
+        gene_out = ANNOT_DIR / f"{name}_gene_ids.txt"
+
+        sub.to_csv(out, sep="\t", index=False)
+
+        sub["Gene_ID"].dropna().drop_duplicates().sort_values().to_csv(
+            gene_out, index=False, header=False
+        )
+
+        print(f"Saved: {out}")
+        print(f"Saved: {gene_out}")
+        print(f"Number of genes: {sub['Gene_ID'].nunique()}")
+
+all_curated = []
+
+for scan, infile in GO_FILES.items():
+
+    df = pd.read_csv(infile, sep="\t")
+
+    df = df[df["GO_term"].notna()]
+    df = df[df["GO_term"] != "NA"]
+    df = df[df["GO_category"].isin(["BP", "MF", "CC"])]
+    df = df[df["FDR"] < 0.05].copy()
+
+    df["Plant_relevant"] = df["GO_term"].apply(is_plant_relevant)
+    df = df[df["Plant_relevant"]].copy()
+
+    df["Functional_interpretation"] = df["GO_term"].apply(functional_interpretation)
+
+    df = df.sort_values(["FDR", "P_value"])
+
+    cols = [
+        "GO_category",
+        "GO_term",
+        "GO",
+        "Functional_interpretation",
+        "Selected_with_GO",
+        "Selected_total",
+        "Background_with_GO",
+        "Background_total",
+        "Odds_ratio",
+        "P_value",
+        "FDR",
+        "minus_log10_FDR",
+        "Gene_ratio",
+        "Bg_ratio",
+        "Sweep_type",
+    ]
+
+    df = df[[c for c in cols if c in df.columns]]
+
+    out_table = GO_DIR / f"{scan}_GO_enrichment_curated_plant_relevant.tsv"
+    df.to_csv(out_table, sep="\t", index=False)
+
+    make_bubble(
+        df,
+        scan,
+        GO_DIR / f"{scan}_GO_enrichment_curated_plant_relevant_bubble"
+    )
+
+    all_curated.append(df)
+
+    print(f"\n{scan.capitalize()}:")
+    print(f"Saved curated table: {out_table}")
+    print(f"Terms retained: {len(df)}")
+
+if all_curated:
+    combined = pd.concat(all_curated, ignore_index=True)
+    combined.to_csv(
+        GO_DIR / "combined_GO_enrichment_curated_plant_relevant.tsv",
+        sep="\t",
+        index=False
+    )
+
+extract_genes_for_go_terms()
+
+print("\nDone.")
 EOF
