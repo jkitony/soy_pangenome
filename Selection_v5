@@ -8,6 +8,7 @@ python conform_wm82a5_ids.py \
   --gff glyma.Wm82.gnm5.ann1.J7HW.gene_models_main.gff3.gz \
   --protein glyma.Wm82.gnm5.ann1.J7HW.protein.faa.gz \
   --out_prefix Wm82a5
+
 ########################################################################
 cat > conform_wm82a5_ids.py << 'EOF'
 #!/usr/bin/env python3
