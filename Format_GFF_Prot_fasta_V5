@@ -8,7 +8,14 @@ python conform_wm82a5_ids.py \
   --gff glyma.Wm82.gnm5.ann1.J7HW.gene_models_main.gff3.gz \
   --protein glyma.Wm82.gnm5.ann1.J7HW.protein.faa.gz \
   --out_prefix Wm82a5
-
+########
+#OR
+cut -f1 PangenomeAll_vs_Wm82a5.gene_counts.tsv | tail -n +2 > count_gene_ids.txt
+python conform_wm82a5_ids.py \
+  --gff glyma.Wm82.gnm5.ann1.J7HW.gene_models_main.gff3.gz \
+  --protein glyma.Wm82.gnm5.ann1.J7HW.protein.faa.gz \
+  --counts_ids count_gene_ids.txt \
+  --out_prefix Wm82a5
 ########################################################################
 cat > conform_wm82a5_ids.py << 'EOF'
 #!/usr/bin/env python3
