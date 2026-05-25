@@ -1,0 +1,287 @@
+#Download 
+/data1/jkitony/soybean/Expression/
+https://data.soybase.org/Glycine/max/annotations/Wm82.gnm5.ann1.J7HW/
+glyma.Wm82.gnm5.ann1.J7HW.gene_models_main.gff3.gz
+glyma.Wm82.gnm5.ann1.J7HW.protein.faa.gz
+
+python conform_wm82a5_ids.py \
+  --gff glyma.Wm82.gnm5.ann1.J7HW.gene_models_main.gff3.gz \
+  --protein glyma.Wm82.gnm5.ann1.J7HW.protein.faa.gz \
+  --out_prefix Wm82a5
+########################################################################
+cat > conform_wm82a5_ids.py << 'EOF'
+#!/usr/bin/env python3
+
+import argparse
+import re
+import gzip
+from collections import defaultdict
+
+def open_maybe_gz(path):
+    return gzip.open(path, "rt") if path.endswith(".gz") else open(path)
+
+def parse_attrs(attr):
+    d = {}
+    for x in attr.strip().split(";"):
+        if "=" in x:
+            k, v = x.split("=", 1)
+            d[k] = v
+    return d
+
+def format_attrs(d):
+    return ";".join([f"{k}={v}" for k, v in d.items()])
+
+def chr_clean(chrom):
+    # glyma.Wm82.gnm5.Chr01 -> Chr01
+    m = re.search(r"(Chr\d+)", chrom)
+    return m.group(1) if m else chrom
+
+def chr_sort_key(chrom):
+    c = chr_clean(chrom)
+    m = re.search(r"Chr(\d+)", c)
+    return int(m.group(1)) if m else 999
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--gff", required=True)
+    ap.add_argument("--protein", required=True)
+    ap.add_argument("--out_prefix", default="Wm82a5_renamed")
+    ap.add_argument("--counts_ids", default=None,
+                    help="Optional file with expression gene IDs in first column")
+    args = ap.parse_args()
+
+    # ------------------------------------------------------------
+    # 1. Read genes from GFF
+    # ------------------------------------------------------------
+    genes = []
+
+    with open_maybe_gz(args.gff) as f:
+        for line in f:
+            if line.startswith("#"):
+                continue
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 9:
+                continue
+            chrom, source, feature, start, end, score, strand, phase, attrs = parts
+            if feature != "gene":
+                continue
+
+            ad = parse_attrs(attrs)
+            old_gene = ad.get("ID")
+            if old_gene is None:
+                continue
+
+            genes.append({
+                "chrom": chrom,
+                "chr_short": chr_clean(chrom),
+                "start": int(start),
+                "end": int(end),
+                "strand": strand,
+                "old_gene": old_gene
+            })
+
+    genes = sorted(
+        genes,
+        key=lambda x: (chr_sort_key(x["chrom"]), x["start"], x["end"])
+    )
+
+    # ------------------------------------------------------------
+    # 2. Assign expression-style IDs
+    # ------------------------------------------------------------
+    gene_map = {}
+
+    chr_counts = defaultdict(int)
+
+    for g in genes:
+        chr_counts[g["chr_short"]] += 1
+        n = chr_counts[g["chr_short"]] * 10
+
+        new_gene = f"Gmax_Wm82a5.{g['chr_short']}.g{n:06d}"
+
+        gene_map[g["old_gene"]] = {
+            "new_gene": new_gene,
+            "chrom": g["chrom"],
+            "chr_short": g["chr_short"],
+            "start": g["start"],
+            "end": g["end"],
+            "strand": g["strand"]
+        }
+
+    # ------------------------------------------------------------
+    # 3. Build transcript map from GFF mRNA features
+    # ------------------------------------------------------------
+    tx_map = {}
+
+    with open_maybe_gz(args.gff) as f:
+        for line in f:
+            if line.startswith("#"):
+                continue
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 9:
+                continue
+
+            feature = parts[2]
+            attrs = parse_attrs(parts[8])
+
+            if feature == "mRNA":
+                old_tx = attrs.get("ID")
+                parent = attrs.get("Parent")
+
+                if old_tx and parent in gene_map:
+                    # keep isoform suffix from old transcript, e.g. .1
+                    suffix = old_tx.replace(parent, "")
+                    if not suffix.startswith("."):
+                        suffix = ".1"
+
+                    new_gene = gene_map[parent]["new_gene"]
+                    new_tx = new_gene + suffix
+
+                    tx_map[old_tx] = {
+                        "old_gene": parent,
+                        "new_gene": new_gene,
+                        "new_tx": new_tx
+                    }
+
+    # ------------------------------------------------------------
+    # 4. Write ID map
+    # ------------------------------------------------------------
+    map_out = args.out_prefix + ".id_map.tsv"
+
+    with open(map_out, "w") as out:
+        out.write(
+            "old_gene\told_transcript\tnew_gene\tnew_transcript\t"
+            "chrom\tstart\tend\tstrand\n"
+        )
+
+        for old_tx, info in sorted(tx_map.items()):
+            old_gene = info["old_gene"]
+            g = gene_map[old_gene]
+            out.write(
+                f"{old_gene}\t{old_tx}\t{info['new_gene']}\t{info['new_tx']}\t"
+                f"{g['chrom']}\t{g['start']}\t{g['end']}\t{g['strand']}\n"
+            )
+
+    # ------------------------------------------------------------
+    # 5. Rewrite GFF IDs
+    # ------------------------------------------------------------
+    gff_out = args.out_prefix + ".gene_models_main.renamed.gff3"
+
+    with open_maybe_gz(args.gff) as f, open(gff_out, "w") as out:
+        for line in f:
+            if line.startswith("#"):
+                out.write(line)
+                continue
+
+            parts = line.rstrip("\n").split("\t")
+
+            if len(parts) < 9:
+                out.write(line)
+                continue
+
+            attrs = parse_attrs(parts[8])
+
+            # gene feature
+            if parts[2] == "gene":
+                old_gene = attrs.get("ID")
+                if old_gene in gene_map:
+                    attrs["old_ID"] = old_gene
+                    attrs["ID"] = gene_map[old_gene]["new_gene"]
+                    attrs["Name"] = gene_map[old_gene]["new_gene"]
+
+            # mRNA feature
+            elif parts[2] == "mRNA":
+                old_tx = attrs.get("ID")
+                old_parent = attrs.get("Parent")
+
+                if old_tx in tx_map:
+                    attrs["old_ID"] = old_tx
+                    attrs["ID"] = tx_map[old_tx]["new_tx"]
+
+                if old_parent in gene_map:
+                    attrs["old_Parent"] = old_parent
+                    attrs["Parent"] = gene_map[old_parent]["new_gene"]
+
+            # exon/CDS/UTR etc.
+            else:
+                old_parent = attrs.get("Parent")
+
+                if old_parent in tx_map:
+                    attrs["old_Parent"] = old_parent
+                    attrs["Parent"] = tx_map[old_parent]["new_tx"]
+
+                old_id = attrs.get("ID")
+                if old_id:
+                    new_id = old_id
+
+                    for old_tx, info in tx_map.items():
+                        if old_tx in new_id:
+                            new_id = new_id.replace(old_tx, info["new_tx"])
+                            break
+
+                    attrs["old_ID"] = old_id
+                    attrs["ID"] = new_id
+
+            parts[8] = format_attrs(attrs)
+            out.write("\t".join(parts) + "\n")
+
+    # ------------------------------------------------------------
+    # 6. Rewrite protein FASTA headers
+    # ------------------------------------------------------------
+    prot_out = args.out_prefix + ".protein.renamed.faa"
+
+    with open_maybe_gz(args.protein) as f, open(prot_out, "w") as out:
+        for line in f:
+            if line.startswith(">"):
+                old_tx = line[1:].strip().split()[0]
+
+                if old_tx in tx_map:
+                    new_tx = tx_map[old_tx]["new_tx"]
+                    new_gene = tx_map[old_tx]["new_gene"]
+                    old_gene = tx_map[old_tx]["old_gene"]
+
+                    out.write(
+                        f">{new_tx} gene={new_gene} "
+                        f"old_transcript={old_tx} old_gene={old_gene}\n"
+                    )
+                else:
+                    out.write(line)
+            else:
+                out.write(line)
+
+    # ------------------------------------------------------------
+    # 7. Optional: compare with expression count IDs
+    # ------------------------------------------------------------
+    if args.counts_ids:
+        expected = set(g["new_gene"] for g in gene_map.values())
+        observed = set()
+
+        with open(args.counts_ids) as f:
+            for line in f:
+                if line.strip():
+                    observed.add(line.strip().split()[0])
+
+        missing_from_map = sorted(observed - expected)
+        missing_from_counts = sorted(expected - observed)
+
+        with open(args.out_prefix + ".counts_not_in_map.txt", "w") as out:
+            for x in missing_from_map:
+                out.write(x + "\n")
+
+        with open(args.out_prefix + ".map_not_in_counts.txt", "w") as out:
+            for x in missing_from_counts:
+                out.write(x + "\n")
+
+        print(f"Expression IDs: {len(observed)}")
+        print(f"Mapped genes:    {len(expected)}")
+        print(f"Counts not in map: {len(missing_from_map)}")
+        print(f"Map not in counts: {len(missing_from_counts)}")
+
+    print("\nDone.")
+    print(f"ID map:          {map_out}")
+    print(f"Renamed GFF:     {gff_out}")
+    print(f"Renamed protein: {prot_out}")
+
+if __name__ == "__main__":
+    main()
+EOF
+########################################################################
