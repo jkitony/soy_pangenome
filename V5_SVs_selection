@@ -9,6 +9,7 @@ cp /data1/jkitony/soybean/SVs_selection_scan/filtered/* .
 VCF_GZ="filtered/soy.SVmarkers.filt.vcf.gz"
 VCF_BCF="filtered/soy.SVmarkers.filt.bcf"
 ./run_sv_xpclr_from_filtered_v5.sh
+
 ############################################################################
 cat > run_sv_xpclr_from_filtered_v5.sh << 'EOF'
 #!/usr/bin/env bash
