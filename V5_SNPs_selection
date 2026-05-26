@@ -529,6 +529,20 @@ echo "Done background eggNOG."
 EOF
 
 chmod +x 06_run_eggnog_background_v5.sh
+###########################################
+mamba activate eggnog_env
+
+EGGNOG_DB=/data1/jkitony/Baobab/eggnog/eggnog-mapper/eggnog_data
+
+mkdir -p 06_eggnog/improvement
+
+emapper.py \
+  -i 05_annotation/improvement.top1.proteins.one_isoform.fa \
+  --itype proteins \
+  --output improvement_top1 \
+  --output_dir 06_eggnog/improvement \
+  --data_dir ${EGGNOG_DB} \
+  --cpu 45
 
 ##############################################################################################################################################################
 #GO enrichment analysis
