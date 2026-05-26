@@ -1515,3 +1515,324 @@ for sweep, gofile in GO_FILES.items():
 print()
 print("Done.")
 EOF
+
+RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+cd /data1/jkitony/soybean/Expression
+mkdir -p SNP_SV_comparison/{plots,tables}
+cd SNP_SV_comparison
+
+python make_snp_sv_comparison_figures.py
+############################################################################################
+cat > make_snp_sv_comparison_figures.py << 'EOF'
+#!/usr/bin/env python3
+
+import os
+import re
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from itertools import combinations
+
+OUTDIR = "plots"
+TABLEDIR = "tables"
+
+os.makedirs(OUTDIR, exist_ok=True)
+os.makedirs(TABLEDIR, exist_ok=True)
+
+GENE_FILES = {
+    "SNP_dom": "../SNPs/05_annotation/domestication.top1.gene_ids.txt",
+    "SNP_imp": "../SNPs/05_annotation/improvement.top1.gene_ids.txt",
+    "SV_dom": "../SVs/XPCLRS_SV/annotation/domestication.SV.top1.gene_ids.txt",
+    "SV_imp": "../SVs/XPCLRS_SV/annotation/improvement.SV.top1.gene_ids.txt",
+}
+
+GO_FILES = {
+    "SNP_dom": "../SNPs/07_go/domestication_GO_enrichment_real_background.tsv",
+    "SNP_imp": "../SNPs/07_go/improvement_GO_enrichment_real_background.tsv",
+    "SV_dom": "../SVs/GO_SV/domestication_sv_GO_enrichment_real_background.tsv",
+    "SV_imp": "../SVs/GO_SV/improvement_sv_GO_enrichment_real_background.tsv",
+}
+
+TOP_N_PER_DATASET = 10
+
+REMOVE_EXACT = [
+    "metabolic process",
+    "cellular process",
+    "biological_process",
+    "molecular_function",
+    "cellular_component",
+]
+
+BLACKLIST_KEYWORDS = [
+    "angiogenesis", "blood", "arterial", "endothelial",
+    "cardiac", "heart", "muscle", "neuron", "synapse",
+    "axon", "brain", "placenta", "mammary",
+    "lymphocyte", "leukocyte", "macrophage",
+    "T cell", "B cell",
+    "IgE", "immunoglobulin",
+    "fungal-type", "mating projection", "septum digestion",
+    "primary cell septum", "division septum",
+]
+
+blacklist_pattern = re.compile(
+    "|".join([re.escape(x) for x in BLACKLIST_KEYWORDS]),
+    flags=re.IGNORECASE
+)
+
+def read_gene_set(path):
+    with open(path) as f:
+        return {x.strip() for x in f if x.strip()}
+
+###############################################################################
+# 1. GENE OVERLAP / UPSET PLOT
+###############################################################################
+
+sets = {name: read_gene_set(path) for name, path in GENE_FILES.items()}
+
+summary = pd.DataFrame({
+    "Set": list(sets.keys()),
+    "Gene_count": [len(v) for v in sets.values()]
+})
+
+summary.to_csv(
+    f"{TABLEDIR}/snp_sv_gene_set_sizes.tsv",
+    sep="\t",
+    index=False
+)
+
+all_genes = sorted(set().union(*sets.values()))
+
+membership = pd.DataFrame({"Gene_ID": all_genes})
+
+for name, genes in sets.items():
+    membership[name] = membership["Gene_ID"].isin(genes)
+
+membership.to_csv(
+    f"{TABLEDIR}/snp_sv_gene_membership_matrix.tsv",
+    sep="\t",
+    index=False
+)
+
+rows = []
+names = list(sets.keys())
+
+for r in range(1, len(names) + 1):
+    for combo in combinations(names, r):
+        in_combo = set.intersection(*(sets[x] for x in combo))
+        exact = in_combo.copy()
+
+        for x in names:
+            if x not in combo:
+                exact -= sets[x]
+
+        rows.append({
+            "Intersection": "&".join(combo),
+            "Degree": r,
+            "Gene_count": len(exact),
+            "Genes": ",".join(sorted(exact))
+        })
+
+intersections = pd.DataFrame(rows)
+
+intersections = intersections.sort_values(
+    ["Gene_count", "Degree"],
+    ascending=[False, True]
+)
+
+intersections.to_csv(
+    f"{TABLEDIR}/snp_sv_gene_upset_intersections.tsv",
+    sep="\t",
+    index=False
+)
+
+plot_df = intersections[
+    intersections["Gene_count"] > 0
+].head(20).copy()
+
+plot_df = plot_df.iloc[::-1].reset_index(drop=True)
+
+fig = plt.figure(figsize=(11, 8))
+
+gs = fig.add_gridspec(
+    2,
+    1,
+    height_ratios=[3, 1.4],
+    hspace=0.05
+)
+
+ax_bar = fig.add_subplot(gs[0])
+ax_mat = fig.add_subplot(gs[1])
+
+x = range(len(plot_df))
+
+ax_bar.bar(x, plot_df["Gene_count"])
+ax_bar.set_ylabel("Gene count")
+ax_bar.set_title("SNP and SV sweep gene intersections")
+ax_bar.set_xticks([])
+
+for i, row in plot_df.iterrows():
+    combo = row["Intersection"].split("&")
+    y_positions = []
+
+    for j, set_name in enumerate(names):
+        if set_name in combo:
+            ax_mat.scatter(i, j, s=70)
+            y_positions.append(j)
+        else:
+            ax_mat.scatter(i, j, s=25, alpha=0.2)
+
+    if len(y_positions) > 1:
+        ax_mat.plot(
+            [i, i],
+            [min(y_positions), max(y_positions)],
+            linewidth=1
+        )
+
+ax_mat.set_yticks(range(len(names)))
+ax_mat.set_yticklabels(names)
+ax_mat.set_xticks(x)
+ax_mat.set_xticklabels(
+    plot_df["Gene_count"],
+    rotation=90,
+    fontsize=8
+)
+ax_mat.set_xlabel("Intersection size")
+ax_mat.set_ylim(-0.5, len(names)-0.5)
+
+plt.tight_layout()
+
+plt.savefig(f"{OUTDIR}/snp_sv_gene_upset_plot.png", dpi=300)
+plt.savefig(f"{OUTDIR}/snp_sv_gene_upset_plot.pdf")
+
+plt.close()
+
+###############################################################################
+# 2. BALANCED GO COMPARISON HEATMAP
+###############################################################################
+
+dfs = []
+
+for label, path in GO_FILES.items():
+    df = pd.read_csv(path, sep="\t")
+    df["Dataset"] = label
+
+    df = df[
+        (df["GO_term"].notna()) &
+        (df["GO_term"] != "NA") &
+        (df["FDR"].notna())
+    ].copy()
+
+    df = df[
+        ~df["GO_term"].isin(REMOVE_EXACT)
+    ].copy()
+
+    df = df[
+        ~df["GO_term"].astype(str).str.contains(
+            blacklist_pattern,
+            na=False
+        )
+    ].copy()
+
+    df["minus_log10_FDR"] = -np.log10(
+        df["FDR"].replace(0, np.nextafter(0, 1))
+    )
+
+    df = df.sort_values("FDR")
+
+    dfs.append(df)
+
+selected_terms = set()
+
+for df in dfs:
+    selected_terms.update(
+        df.head(TOP_N_PER_DATASET)["GO_term"].tolist()
+    )
+
+all_go = pd.concat(dfs, ignore_index=True)
+
+plot_go = all_go[
+    all_go["GO_term"].isin(selected_terms)
+].copy()
+
+heat = plot_go.pivot_table(
+    index="GO_term",
+    columns="Dataset",
+    values="minus_log10_FDR",
+    fill_value=0
+)
+
+wanted = ["SNP_dom", "SNP_imp", "SV_dom", "SV_imp"]
+
+for col in wanted:
+    if col not in heat.columns:
+        heat[col] = 0
+
+heat = heat[wanted]
+
+heat = heat.loc[
+    heat.max(axis=1).sort_values().index
+]
+
+heat.to_csv(
+    f"{TABLEDIR}/GO_comparison_heatmap_balanced.tsv",
+    sep="\t"
+)
+
+fig, ax = plt.subplots(figsize=(9, 12))
+
+im = ax.imshow(
+    heat.values,
+    aspect="auto",
+    vmin=0,
+    vmax=max(1, heat.values.max())
+)
+
+ax.set_xticks(range(len(heat.columns)))
+ax.set_xticklabels(heat.columns)
+
+ax.set_yticks(range(len(heat.index)))
+ax.set_yticklabels(heat.index, fontsize=8)
+
+cbar = plt.colorbar(im)
+cbar.set_label("-log10(FDR)")
+
+ax.set_title(
+    "Comparative GO enrichment across SNP and SV selective sweeps"
+)
+
+plt.tight_layout()
+
+plt.savefig(
+    f"{OUTDIR}/GO_comparison_heatmap_balanced.png",
+    dpi=300
+)
+
+plt.savefig(
+    f"{OUTDIR}/GO_comparison_heatmap_balanced.pdf"
+)
+
+plt.close()
+
+###############################################################################
+# DONE
+###############################################################################
+
+print("\nSaved figures:")
+print(f"{OUTDIR}/snp_sv_gene_upset_plot.png")
+print(f"{OUTDIR}/GO_comparison_heatmap_balanced.png")
+
+print("\nSaved tables:")
+print(f"{TABLEDIR}/snp_sv_gene_set_sizes.tsv")
+print(f"{TABLEDIR}/snp_sv_gene_membership_matrix.tsv")
+print(f"{TABLEDIR}/snp_sv_gene_upset_intersections.tsv")
+print(f"{TABLEDIR}/GO_comparison_heatmap_balanced.tsv")
+
+print("\nGene set sizes:")
+print(summary)
+
+print("\nGO terms per dataset in heatmap:")
+for col in ["SNP_dom", "SNP_imp", "SV_dom", "SV_imp"]:
+    print(col, int((heat[col] > 0).sum()))
+EOF
