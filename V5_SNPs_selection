@@ -1,3 +1,13 @@
+05_annotation/domestication.top1.gene_ids.txt
+05_annotation/improvement.top1.gene_ids.txt
+
+XPCLRS_SV/annotation/domestication.SV.top1.gene_ids.txt
+XPCLRS_SV/annotation/improvement.SV.top1.gene_ids.txt
+DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
+DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
+
+
+
 (soy_selection) [ jkitony@10.7.30.227:/data1/jkitony/soybean/Expression/SNPs ]$
 #Files needed from the beginning
 Merged_pangenie_multi-samples_Sep04_2025.vcf.gz
@@ -755,7 +765,127 @@ for sweep_type, path in SELECTED.items():
     print(f"Saved: {out_tsv}")
     print(f"Saved: {png}")
 EOF
+#############################################################################################################################################################
+python 06_make_function_table_v5.py
+##############################################################################################################################################################
+cat > 06_make_function_table_v5.py << 'EOF'
+#!/usr/bin/env python3
 
+import pandas as pd
+import re
+from pathlib import Path
+
+files = {
+    "Domestication": "06_eggnog/domestication/domestication_top1.emapper.annotations",
+    "Improvement": "06_eggnog/improvement/improvement_top1.emapper.annotations",
+}
+
+outdir = Path("05_annotation")
+outdir.mkdir(exist_ok=True)
+
+def read_emapper(path):
+
+    header = None
+
+    with open(path) as f:
+        for line in f:
+            if line.startswith("#query"):
+                header = line.strip().lstrip("#").split("\t")
+                break
+
+    df = pd.read_csv(
+        path,
+        sep="\t",
+        comment="#",
+        header=None
+    )
+
+    if header is not None and len(header) == df.shape[1]:
+        df.columns = header
+    else:
+        raise ValueError(f"Could not parse eggNOG header from {path}")
+
+    return df
+
+def extract_gene_id(x):
+
+    x = str(x)
+
+    m = re.search(r"(Gmax_Wm82a5\.Chr\d+\.g\d+)", x)
+
+    if m:
+        return m.group(1)
+
+    m = re.search(r"gene=(Gmax_Wm82a5\.Chr\d+\.g\d+)", x)
+
+    if m:
+        return m.group(1)
+
+    x = x.split()[0]
+    x = re.sub(r"\.\d+$", "", x)
+
+    return x
+
+tables = []
+
+for sweep_type, path in files.items():
+
+    print(f"Reading {path}")
+
+    df = read_emapper(path)
+
+    keep = {
+        "query": "Protein_ID",
+        "Description": "Description",
+        "GOs": "GO_terms",
+        "PFAMs": "Pfam_domain",
+        "KEGG_Pathway": "KEGG_pathway",
+        "KEGG_ko": "KEGG_ortholog",
+        "COG_category": "COG_category",
+        "Preferred_name": "Preferred_name",
+    }
+
+    available = [c for c in keep if c in df.columns]
+
+    out = df[available].copy()
+
+    out = out.rename(columns=keep)
+
+    out["Gene_ID"] = out["Protein_ID"].apply(extract_gene_id)
+
+    out["Sweep_type"] = sweep_type
+
+    tables.append(out)
+
+final = pd.concat(tables, ignore_index=True)
+
+cols = [
+    "Gene_ID",
+    "Protein_ID",
+    "Preferred_name",
+    "Description",
+    "GO_terms",
+    "Pfam_domain",
+    "KEGG_pathway",
+    "KEGG_ortholog",
+    "COG_category",
+    "Sweep_type",
+]
+
+final = final[[c for c in cols if c in final.columns]]
+
+outfile = outdir / "xpclr_top1_functional_annotation_table.tsv"
+
+final.to_csv(outfile, sep="\t", index=False)
+
+print()
+print(f"Saved: {outfile}")
+print()
+
+print(final["Sweep_type"].value_counts())
+EOF
+
+chmod +x 06_make_function_table_v5.py
 ##############################################################################################################################################################
 #curated GO table
 python 10_make_curated_go_tables_and_plots_v5.py
@@ -977,4 +1107,411 @@ if all_curated:
 extract_genes_for_go_terms()
 
 print("\nDone.")
+EOF
+
+###################################################################################################
+#Expression -Nolan
+(goenv) [ jkitony@10.7.30.227:/data1/jkitony/soybean/Expression/SNPs ]$ python extract_sweep_expression_v5.py
+Expression genes: 49255
+Expression samples: 137
+
+domestication_SNP
+Sweep genes: 4454
+Genes found in expression: 448
+Samples: 137
+Saved: domestication_SNP_expression_counts.tsv
+
+improvement_SNP
+Sweep genes: 5147
+Genes found in expression: 253
+Samples: 137
+Saved: improvement_SNP_expression_counts.tsv
+
+domestication_SV
+Sweep genes: 2049
+Genes found in expression: 260
+Samples: 137
+Saved: domestication_SV_expression_counts.tsv
+
+improvement_SV
+Sweep genes: 2235
+Genes found in expression: 204
+Samples: 137
+Saved: improvement_SV_expression_counts.tsv
+
+#####################################################################################################
+
+cat > extract_sweep_expression_v5.py << 'EOF'
+#!/usr/bin/env python3
+
+import pandas as pd
+from pathlib import Path
+
+EXPR = "PangenomeAll_vs_Wm82a5.gene_counts.tsv"
+
+gene_sets = {
+    "domestication_SNP": "05_annotation/domestication.top1.gene_ids.txt",
+    "improvement_SNP": "05_annotation/improvement.top1.gene_ids.txt",
+    "domestication_SV": "../SVs/XPCLRS_SV/annotation/domestication.SV.top1.gene_ids.txt",
+    "improvement_SV": "../SVs/XPCLRS_SV/annotation/improvement.SV.top1.gene_ids.txt",
+}
+
+expr = pd.read_csv(EXPR, sep="\t", comment="#")
+
+gene_col = "Geneid"
+
+# remove featureCounts annotation columns
+annotation_cols = ["Geneid", "Chr", "Start", "End", "Strand", "Length"]
+count_cols = [c for c in expr.columns if c not in annotation_cols]
+
+expr_counts = expr[[gene_col] + count_cols].copy()
+expr_counts[gene_col] = expr_counts[gene_col].astype(str)
+
+print("Expression genes:", expr_counts.shape[0])
+print("Expression samples:", len(count_cols))
+
+for name, path in gene_sets.items():
+
+    if not Path(path).exists():
+        print(f"Skipping {name}; missing {path}")
+        continue
+
+    genes = pd.read_csv(path, header=None)[0].astype(str)
+    genes_set = set(genes)
+
+    sub = expr_counts[expr_counts[gene_col].isin(genes_set)].copy()
+
+    outfile = f"{name}_expression_counts.tsv"
+    sub.to_csv(outfile, sep="\t", index=False)
+
+    print()
+    print(name)
+    print("Sweep genes:", len(genes_set))
+    print("Genes found in expression:", sub.shape[0])
+    print("Samples:", len(count_cols))
+    print("Saved:", outfile)
+EOF
+#############################################################################################################
+#Heatmap
+cat > make_expression_metadata_and_heatmaps.py << 'EOF'
+#!/usr/bin/env python3
+
+import re
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+from pathlib import Path
+
+files = [
+    "domestication_SNP_expression_counts.tsv",
+    "improvement_SNP_expression_counts.tsv",
+    "domestication_SV_expression_counts.tsv",
+    "improvement_SV_expression_counts.tsv",
+]
+
+def clean_sample(x):
+    x = x.split("/")[-1]
+    x = x.replace(".noseq.bam", "")
+    return x
+
+def parse_sample(x):
+    s = clean_sample(x)
+    parts = s.split("_")
+    species = parts[0]
+    accession = parts[2] if len(parts) > 2 else "NA"
+    tissue = "NA"
+    condition = "normal"
+
+    for t in ["leaf", "root", "stem", "flower", "pods"]:
+        if f"_{t}" in s:
+            tissue = t
+
+    for c in ["ctrl", "drought", "heat", "heat6h", "waterlogged", "waterlogged24h", "cold"]:
+        if c in s:
+            condition = c
+
+    return species, accession, tissue, condition
+
+for infile in files:
+    df = pd.read_csv(infile, sep="\t")
+    gene_col = "Geneid"
+
+    count_cols = [c for c in df.columns if c != gene_col]
+    clean_cols = [clean_sample(c) for c in count_cols]
+
+    meta = pd.DataFrame(
+        [parse_sample(c) for c in count_cols],
+        columns=["Species", "Accession", "Tissue", "Condition"]
+    )
+    meta.insert(0, "Sample", clean_cols)
+    meta.to_csv(infile.replace("_expression_counts.tsv", "_sample_metadata.tsv"), sep="\t", index=False)
+
+    mat = df.set_index(gene_col)[count_cols]
+    mat.columns = clean_cols
+    mat = mat.apply(pd.to_numeric, errors="coerce").fillna(0)
+
+    # remove genes with zero expression everywhere
+    mat = mat.loc[mat.sum(axis=1) > 0]
+
+    # log transform
+    logmat = np.log2(mat + 1)
+
+    # top variable genes
+    topn = min(100, logmat.shape[0])
+    top_genes = logmat.var(axis=1).sort_values(ascending=False).head(topn).index
+    plotmat = logmat.loc[top_genes]
+
+    # z-score by gene
+    z = plotmat.sub(plotmat.mean(axis=1), axis=0)
+    z = z.div(plotmat.std(axis=1).replace(0, np.nan), axis=0).fillna(0)
+
+    outprefix = infile.replace("_expression_counts.tsv", "")
+
+    sns.clustermap(
+        z,
+        figsize=(14, 12),
+        xticklabels=False,
+        yticklabels=False,
+        cmap="RdBu_r",
+        center=0
+    )
+
+    plt.savefig(f"{outprefix}_top{topn}_expression_heatmap.png", dpi=300)
+    plt.savefig(f"{outprefix}_top{topn}_expression_heatmap.pdf")
+    plt.close()
+
+    # tissue mean expression
+    tissue_means = []
+    for tissue in sorted(meta["Tissue"].unique()):
+        samples = meta.loc[meta["Tissue"] == tissue, "Sample"].tolist()
+        samples = [s for s in samples if s in logmat.columns]
+        if samples:
+            tissue_means.append(logmat[samples].mean(axis=1).rename(tissue))
+
+    if tissue_means:
+        tissue_df = pd.concat(tissue_means, axis=1)
+        tissue_df.to_csv(f"{outprefix}_tissue_mean_log2counts.tsv", sep="\t")
+
+    print(f"Done: {infile}")
+EOF
+
+python make_expression_metadata_and_heatmaps.py
+
+#############################################################################################
+
+python plot_top_candidate_expression_heatmap.py
+DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
+DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
+cat > plot_top_candidate_expression_heatmap.py << 'EOF'
+#!/usr/bin/env python3
+
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+import re
+
+###############################################################################
+# INPUTS
+###############################################################################
+
+EXPR = "PangenomeAll_vs_Wm82a5.gene_counts.tsv"
+
+GO_FILES = {
+    "Domestication_SV":
+        "../SVs/GO_SV/domestication_sv_GO_enrichment_real_background.tsv",
+
+    "Improvement_SV":
+        "../SVs/GO_SV/improvement_sv_GO_enrichment_real_background.tsv",
+}
+
+ANNOT_TABLE = "../SVs/XPCLRS_SV/annotation/sv_xpclr_top1_functional_annotation_table.tsv"
+
+TOP_GO_TERMS = 15
+TOP_GENES_PER_GO = 3
+
+###############################################################################
+# READ EXPRESSION
+###############################################################################
+
+expr = pd.read_csv(EXPR, sep="\t", comment="#")
+
+annotation_cols = ["Geneid", "Chr", "Start", "End", "Strand", "Length"]
+
+count_cols = [c for c in expr.columns if c not in annotation_cols]
+
+expr = expr[["Geneid"] + count_cols].copy()
+
+###############################################################################
+# CLEAN SAMPLE NAMES
+###############################################################################
+
+def clean_sample(x):
+    x = x.split("/")[-1]
+    x = x.replace(".noseq.bam", "")
+    return x
+
+clean_cols = [clean_sample(c) for c in count_cols]
+
+expr.columns = ["Geneid"] + clean_cols
+
+###############################################################################
+# SAMPLE METADATA
+###############################################################################
+
+def get_tissue(x):
+
+    for t in ["root", "leaf", "stem", "flower", "pods"]:
+        if t in x:
+            return t
+
+    return "other"
+
+sample_tissue = {
+    s: get_tissue(s)
+    for s in clean_cols
+}
+
+###############################################################################
+# READ FUNCTIONAL TABLE
+###############################################################################
+
+annot = pd.read_csv(ANNOT_TABLE, sep="\t")
+
+###############################################################################
+# MAIN
+###############################################################################
+
+for sweep, gofile in GO_FILES.items():
+
+    print()
+    print("======================================")
+    print(sweep)
+    print("======================================")
+
+    go = pd.read_csv(gofile, sep="\t")
+
+    go = go.sort_values("FDR")
+
+    top_go = go.head(TOP_GO_TERMS)
+
+    print("Top GO terms:")
+    print(top_go[["GO_term", "GO", "FDR"]])
+
+    sweep_annot = annot[
+        annot["Sweep_type"] == sweep
+    ].copy()
+
+    candidate_genes = []
+
+    for _, row in top_go.iterrows():
+
+        goid = row["GO"]
+
+        sub = sweep_annot[
+            sweep_annot["GO_terms"].fillna("").str.contains(goid)
+        ].copy()
+
+        sub = sub.drop_duplicates("Gene_ID")
+
+        genes = sub["Gene_ID"].head(TOP_GENES_PER_GO).tolist()
+
+        candidate_genes.extend(genes)
+
+    candidate_genes = sorted(set(candidate_genes))
+
+    print()
+    print("Candidate genes:", len(candidate_genes))
+
+    mat = expr[
+        expr["Geneid"].isin(candidate_genes)
+    ].copy()
+
+    print("Genes found in expression:", mat.shape[0])
+
+    if mat.shape[0] == 0:
+        continue
+
+    mat = mat.set_index("Geneid")
+
+    mat = mat.apply(pd.to_numeric, errors="coerce").fillna(0)
+
+    ############################################################################
+    # GROUP BY TISSUE
+    ############################################################################
+
+    tissue_means = {}
+
+    for tissue in sorted(set(sample_tissue.values())):
+
+        samples = [
+            s for s in mat.columns
+            if sample_tissue[s] == tissue
+        ]
+
+        if len(samples) == 0:
+            continue
+
+        tissue_means[tissue] = mat[samples].mean(axis=1)
+
+    tissue_df = pd.DataFrame(tissue_means)
+
+    tissue_df = np.log2(tissue_df + 1)
+
+    ############################################################################
+    # Z-SCORE
+    ############################################################################
+
+    z = tissue_df.sub(
+        tissue_df.mean(axis=1),
+        axis=0
+    )
+
+    z = z.div(
+        tissue_df.std(axis=1).replace(0, np.nan),
+        axis=0
+    ).fillna(0)
+
+    ############################################################################
+    # SAVE TABLE
+    ############################################################################
+
+    outtable = f"{sweep}_top_candidate_expression.tsv"
+
+    tissue_df.to_csv(outtable, sep="\t")
+
+    print("Saved:", outtable)
+
+    ############################################################################
+    # PLOT
+    ############################################################################
+
+    g = sns.clustermap(
+        z,
+        cmap="RdBu_r",
+        figsize=(10, max(6, 0.3 * z.shape[0])),
+        linewidths=0.2,
+        xticklabels=True,
+        yticklabels=True,
+        center=0
+    )
+
+    plt.suptitle(
+        f"{sweep} top candidate gene expression",
+        y=1.02
+    )
+
+    png = f"{sweep}_top_candidate_expression_heatmap.png"
+    pdf = f"{sweep}_top_candidate_expression_heatmap.pdf"
+
+    plt.savefig(png, dpi=300, bbox_inches="tight")
+    plt.savefig(pdf, bbox_inches="tight")
+
+    plt.close()
+
+    print("Saved:", png)
+
+print()
+print("Done.")
 EOF
