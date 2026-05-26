@@ -1,1 +1,298 @@
+Meta.csv
+xpclrs.sif
+go-basic.obo
+Wm82a5.gene_models_main.renamed.gff3
+Wm82a5.protein.renamed.faa
+/data1/jkitony/soybean/Expression/SVs/filtered
+cp /data1/jkitony/soybean/SVs_selection_scan/filtered/* .
+ 
+VCF_GZ="filtered/soy.SVmarkers.filt.vcf.gz"
+VCF_BCF="filtered/soy.SVmarkers.filt.bcf"
+./run_sv_xpclr_from_filtered_v5.sh
+############################################################################
+cat > run_sv_xpclr_from_filtered_v5.sh << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
 
+VCF_GZ="filtered/soy.SVmarkers.filt.vcf.gz"
+VCF_BCF="filtered/soy.SVmarkers.filt.bcf"
+
+META="Meta.csv"
+SIF="xpclrs.sif"
+GFF="Wm82a5.gene_models_main.renamed.gff3"
+PROTEIN_FA="Wm82a5.protein.renamed.faa"
+GO_OBO="go-basic.obo"
+EGGNOG_DB="/data1/jkitony/Baobab/eggnog/eggnog-mapper/eggnog_data"
+
+THREADS_XPCLR=20
+THREADS_EGGNOG=45
+
+WINDOW=100000
+STEP=20000
+MAXSNPS=50
+MINSNPS=2
+MERGE_DIST=100000
+
+CHRS="Chr01 Chr02 Chr03 Chr04 Chr05 Chr06 Chr07 Chr08 Chr09 Chr10 Chr11 Chr12 Chr13 Chr14 Chr15 Chr16 Chr17 Chr18 Chr19 Chr20"
+
+mkdir -p qc logs filtered
+mkdir -p XPCLRS_SV/{domestication,improvement,combined,plots,annotation}
+mkdir -p eggnog_results_sv/{domestication,improvement,background}
+mkdir -p GO_SV
+
+echo "Checking inputs..."
+for f in "${VCF_GZ}" "${META}" "${SIF}" "${GFF}" "${PROTEIN_FA}" "${GO_OBO}"
+do
+    [[ -s "$f" ]] || { echo "Missing: $f"; exit 1; }
+done
+
+echo "Indexing filtered SV VCF if needed..."
+[[ -s "${VCF_GZ}.tbi" ]] || bcftools index -t "${VCF_GZ}"
+
+echo "Converting filtered SV VCF to BCF..."
+if [[ ! -s "${VCF_BCF}" ]]; then
+    bcftools view "${VCF_GZ}" -Ob -o "${VCF_BCF}"
+    bcftools index "${VCF_BCF}"
+fi
+
+echo "SV dataset summary..."
+bcftools query -l "${VCF_GZ}" > qc/SVmarker_samples.txt
+{
+echo -e "Dataset\tSamples\tVariants"
+echo -e "Filtered_SVmarkers\t$(bcftools query -l ${VCF_GZ} | wc -l)\t$(bcftools view -H ${VCF_GZ} | wc -l)"
+} > qc/SV_filtering_summary.tsv
+cat qc/SV_filtering_summary.tsv
+
+echo "Making SV groups from Meta.csv..."
+cat > make_sv_groups_from_meta.py << 'PY'
+#!/usr/bin/env python3
+import csv
+
+meta = "Meta.csv"
+groups = {
+    "Wild_type": "Wild_type.SV.txt",
+    "Landrace": "Landrace.SV.txt",
+    "Cultivar": "Cultivar.SV.txt",
+}
+samples = {g: set() for g in groups}
+
+with open(meta, newline="", encoding="latin1") as f:
+    reader = csv.DictReader(f)
+    for row in reader:
+        pi = row["PI"].strip()
+        ecotype = row["Ecotype"].strip()
+        if ecotype in samples and pi and pi != "NA":
+            samples[ecotype].add(pi)
+
+for group, outfile in groups.items():
+    with open(outfile, "w") as out:
+        for x in sorted(samples[group]):
+            out.write(x + "\n")
+    print(group, len(samples[group]), outfile)
+PY
+
+python make_sv_groups_from_meta.py
+
+comm -12 <(sort qc/SVmarker_samples.txt) <(sort Wild_type.SV.txt) > qc/Wild_type.SVsamples.txt
+comm -12 <(sort qc/SVmarker_samples.txt) <(sort Landrace.SV.txt) > qc/Landrace.SVsamples.txt
+comm -12 <(sort qc/SVmarker_samples.txt) <(sort Cultivar.SV.txt) > qc/Cultivar.SVsamples.txt
+
+{
+echo -e "Group\tMeta_count\tSV_count\tMissing_from_SV"
+echo -e "Wild_type\t$(wc -l < Wild_type.SV.txt)\t$(wc -l < qc/Wild_type.SVsamples.txt)\t$(comm -23 <(sort Wild_type.SV.txt) <(sort qc/SVmarker_samples.txt) | wc -l)"
+echo -e "Landrace\t$(wc -l < Landrace.SV.txt)\t$(wc -l < qc/Landrace.SVsamples.txt)\t$(comm -23 <(sort Landrace.SV.txt) <(sort qc/SVmarker_samples.txt) | wc -l)"
+echo -e "Cultivar\t$(wc -l < Cultivar.SV.txt)\t$(wc -l < qc/Cultivar.SVsamples.txt)\t$(comm -23 <(sort Cultivar.SV.txt) <(sort qc/SVmarker_samples.txt) | wc -l)"
+} > qc/SV_group_summary.tsv
+cat qc/SV_group_summary.tsv
+
+echo "Running SV XP-CLR..."
+for chr in ${CHRS}; do
+    out="XPCLRS_SV/domestication/${chr}.wild_vs_landrace"
+    if ! ls ${out}*.xpclr >/dev/null 2>&1; then
+        singularity exec ${SIF} xpclrs \
+            --input ${VCF_BCF} \
+            --out ${out} \
+            --samplesA qc/Wild_type.SVsamples.txt \
+            --samplesB qc/Landrace.SVsamples.txt \
+            --chr ${chr} \
+            --size ${WINDOW} \
+            --step ${STEP} \
+            --maxsnps ${MAXSNPS} \
+            --minsnps ${MINSNPS} \
+            --threads ${THREADS_XPCLR} \
+            --format tsv \
+            > logs/SV_domestication_${chr}.log 2>&1
+    fi
+done
+
+for chr in ${CHRS}; do
+    out="XPCLRS_SV/improvement/${chr}.landrace_vs_cultivar"
+    if ! ls ${out}*.xpclr >/dev/null 2>&1; then
+        singularity exec ${SIF} xpclrs \
+            --input ${VCF_BCF} \
+            --out ${out} \
+            --samplesA qc/Landrace.SVsamples.txt \
+            --samplesB qc/Cultivar.SVsamples.txt \
+            --chr ${chr} \
+            --size ${WINDOW} \
+            --step ${STEP} \
+            --maxsnps ${MAXSNPS} \
+            --minsnps ${MINSNPS} \
+            --threads ${THREADS_XPCLR} \
+            --format tsv \
+            > logs/SV_improvement_${chr}.log 2>&1
+    fi
+done
+
+echo "Combining XP-CLR outputs..."
+awk 'FNR==1 && NR!=1 {next} {print}' XPCLRS_SV/domestication/*.xpclr \
+| awk 'NR==1 || ($11!="NaN" && $11!="nan" && $11!="NA" && $11!="")' \
+> XPCLRS_SV/combined/domestication.SV.full.tsv
+
+awk 'FNR==1 && NR!=1 {next} {print}' XPCLRS_SV/improvement/*.xpclr \
+| awk 'NR==1 || ($11!="NaN" && $11!="nan" && $11!="NA" && $11!="")' \
+> XPCLRS_SV/combined/improvement.SV.full.tsv
+
+echo "Creating plotting script..."
+cat > plot_sv_xpclr_manhattan.py << 'PY'
+#!/usr/bin/env python3
+import pandas as pd
+import matplotlib.pyplot as plt
+import re
+from pathlib import Path
+
+def chr_sort_key(chrom):
+    m = re.search(r"(\d+)", str(chrom))
+    return int(m.group(1)) if m else 999
+
+def make_plot(infile, outfile_prefix, title):
+    df = pd.read_csv(infile, sep="\t")
+    df["xpclr"] = pd.to_numeric(df["xpclr"], errors="coerce")
+    df["start"] = pd.to_numeric(df["start"], errors="coerce")
+    df["stop"] = pd.to_numeric(df["stop"], errors="coerce")
+    df = df.dropna(subset=["chrom", "start", "stop", "xpclr"])
+    df["midpoint"] = (df["start"] + df["stop"]) / 2
+
+    pieces, ticks, labels = [], [], []
+    offset = 0
+
+    for chrom in sorted(df["chrom"].unique(), key=chr_sort_key):
+        sub = df[df["chrom"] == chrom].sort_values("midpoint").copy()
+        sub["BPcum"] = sub["midpoint"] + offset
+        pieces.append(sub)
+        ticks.append(sub["BPcum"].median())
+        labels.append(str(chrom).replace("Chr", ""))
+        offset = sub["BPcum"].max()
+
+    plot_df = pd.concat(pieces, ignore_index=True)
+    thr95 = plot_df["xpclr"].quantile(0.95)
+    thr99 = plot_df["xpclr"].quantile(0.99)
+
+    top1 = plot_df[plot_df["xpclr"] >= thr99].copy()
+    top1.to_csv(f"{outfile_prefix}.top1.tsv", sep="\t", index=False)
+
+    plt.figure(figsize=(16, 5))
+    for chrom in sorted(plot_df["chrom"].unique(), key=chr_sort_key):
+        sub = plot_df[plot_df["chrom"] == chrom]
+        plt.scatter(sub["BPcum"], sub["xpclr"], s=6, alpha=0.75)
+
+    plt.axhline(thr99, linestyle="--", linewidth=1, label=f"Top 1% = {thr99:.3f}")
+    if thr95 > 0:
+        plt.axhline(thr95, linestyle=":", linewidth=1, label=f"Top 5% = {thr95:.3f}")
+
+    plt.xticks(ticks, labels, fontsize=8)
+    plt.xlabel("Chromosome")
+    plt.ylabel("SV XP-CLR")
+    plt.title(title)
+    plt.legend(frameon=False)
+    plt.tight_layout()
+    plt.savefig(f"{outfile_prefix}.png", dpi=300)
+    plt.savefig(f"{outfile_prefix}.pdf")
+    plt.close()
+
+    print(title)
+    print("Windows:", len(plot_df))
+    print("Top1 threshold:", thr99)
+    print("Top5 threshold:", thr95)
+    print("Top1 windows:", len(top1))
+    print("Max:", plot_df["xpclr"].max())
+
+Path("XPCLRS_SV/plots").mkdir(parents=True, exist_ok=True)
+
+make_plot(
+    "XPCLRS_SV/combined/domestication.SV.full.tsv",
+    "XPCLRS_SV/plots/domestication_SV_XPCLR",
+    "SV XP-CLR: Wild type vs Landrace"
+)
+
+make_plot(
+    "XPCLRS_SV/combined/improvement.SV.full.tsv",
+    "XPCLRS_SV/plots/improvement_SV_XPCLR",
+    "SV XP-CLR: Landrace vs Cultivar"
+)
+PY
+
+python plot_sv_xpclr_manhattan.py
+
+echo "Annotating SV sweep windows with Wm82a5 genes..."
+awk '$3=="gene"' "${GFF}" > XPCLRS_SV/annotation/Wm82a5.genes.gff3
+
+for scan in domestication improvement; do
+    awk 'BEGIN{OFS="\t"} NR>1 {print $1,$2,$3,$11}' \
+        XPCLRS_SV/plots/${scan}_SV_XPCLR.top1.tsv \
+        > XPCLRS_SV/annotation/${scan}.SV.top1.bed
+
+    bedtools sort -i XPCLRS_SV/annotation/${scan}.SV.top1.bed | \
+    bedtools merge -d ${MERGE_DIST} -c 4 -o max \
+        > XPCLRS_SV/annotation/${scan}.SV.top1.merged.bed
+
+    awk 'BEGIN{OFS="\t"} {
+        chr=$1
+        if(chr ~ /^Chr[0-9]+$/){ chr="glyma.Wm82.gnm5." chr }
+        print chr,$2,$3,$4
+    }' XPCLRS_SV/annotation/${scan}.SV.top1.merged.bed \
+        > XPCLRS_SV/annotation/${scan}.SV.top1.merged.gnm5chr.bed
+
+    bedtools intersect \
+        -a XPCLRS_SV/annotation/Wm82a5.genes.gff3 \
+        -b XPCLRS_SV/annotation/${scan}.SV.top1.merged.gnm5chr.bed \
+        -wa -wb \
+        > XPCLRS_SV/annotation/${scan}.SV.top1.selected_genes.tsv
+
+    awk -F'\t' '
+    {
+        split($9,a,";")
+        for(i in a){
+            if(a[i] ~ /^ID=/){
+                gsub("ID=","",a[i])
+                print a[i]
+            }
+        }
+    }' XPCLRS_SV/annotation/${scan}.SV.top1.selected_genes.tsv | sort -u \
+        > XPCLRS_SV/annotation/${scan}.SV.top1.gene_ids.txt
+
+    echo "${scan} SV genes:"
+    wc -l XPCLRS_SV/annotation/${scan}.SV.top1.gene_ids.txt
+done
+
+comm -12 \
+    <(sort XPCLRS_SV/annotation/domestication.SV.top1.gene_ids.txt) \
+    <(sort XPCLRS_SV/annotation/improvement.SV.top1.gene_ids.txt) \
+    > XPCLRS_SV/annotation/shared_domestication_improvement.SV.top1.genes.txt
+
+{
+echo -e "Category\tCount"
+echo -e "Domestication_SV_top1_sweep_regions\t$(wc -l < XPCLRS_SV/annotation/domestication.SV.top1.merged.bed)"
+echo -e "Improvement_SV_top1_sweep_regions\t$(wc -l < XPCLRS_SV/annotation/improvement.SV.top1.merged.bed)"
+echo -e "Domestication_SV_top1_genes\t$(wc -l < XPCLRS_SV/annotation/domestication.SV.top1.gene_ids.txt)"
+echo -e "Improvement_SV_top1_genes\t$(wc -l < XPCLRS_SV/annotation/improvement.SV.top1.gene_ids.txt)"
+echo -e "Shared_SV_top1_genes\t$(wc -l < XPCLRS_SV/annotation/shared_domestication_improvement.SV.top1.genes.txt)"
+} > XPCLRS_SV/annotation/sv_xpclr_top1_summary.tsv
+
+cat XPCLRS_SV/annotation/sv_xpclr_top1_summary.tsv
+
+echo "Done through SV XP-CLR + Wm82a5 gene extraction."
+echo "Next: run protein extraction, eggNOG, and GO real-background scripts."
+EOF
+
+chmod +x run_sv_xpclr_from_filtered_v5.sh
