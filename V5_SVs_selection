@@ -296,3 +296,132 @@ echo "Next: run protein extraction, eggNOG, and GO real-background scripts."
 EOF
 
 chmod +x run_sv_xpclr_from_filtered_v5.sh
+##############################################################################################################################
+#./04_extract_sv_sweep_proteins_v5.sh
+conda deactivate
+##############################################################################################################################
+cat > 04_extract_sv_sweep_proteins_v5.sh << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROTEIN_FA="Wm82a5.protein.renamed.faa"
+ANN_DIR="XPCLRS_SV/annotation"
+
+echo "Using protein FASTA:"
+echo "${PROTEIN_FA}"
+
+for scan in domestication improvement
+do
+    echo
+    echo "======================================"
+    echo "Processing ${scan} SV sweep genes"
+    echo "======================================"
+
+    GENE_IDS="${ANN_DIR}/${scan}.SV.top1.gene_ids.txt"
+
+    PATTERNS="${ANN_DIR}/${scan}.SV.top1.protein_patterns.txt"
+
+    ALL_PROTEINS="${ANN_DIR}/${scan}.SV.top1.proteins.all_isoforms.fa"
+
+    ONE_ISOFORM="${ANN_DIR}/${scan}.SV.top1.proteins.one_isoform.fa"
+
+    if [[ ! -s ${GENE_IDS} ]]; then
+        echo "ERROR: Missing ${GENE_IDS}"
+        exit 1
+    fi
+
+    echo "1. Making gene search patterns..."
+
+    awk '{print "gene="$1}' ${GENE_IDS} \
+        > ${PATTERNS}
+
+    echo "2. Extracting all matching protein isoforms..."
+
+    seqkit grep \
+        -n \
+        -r \
+        -f ${PATTERNS} \
+        ${PROTEIN_FA} \
+        > ${ALL_PROTEINS}
+
+    echo "3. Keeping one isoform per gene..."
+
+    python - ${ALL_PROTEINS} ${ONE_ISOFORM} << 'PY'
+import sys
+import re
+
+infile = sys.argv[1]
+outfile = sys.argv[2]
+
+seen = set()
+write = False
+
+with open(infile) as fin, open(outfile, "w") as fout:
+
+    for line in fin:
+
+        if line.startswith(">"):
+
+            header = line.strip()
+
+            m = re.search(r"gene=([^\s]+)", header)
+
+            if not m:
+                write = False
+                continue
+
+            gene = m.group(1)
+
+            if gene in seen:
+                write = False
+            else:
+                seen.add(gene)
+                write = True
+                fout.write(line)
+
+        else:
+            if write:
+                fout.write(line)
+PY
+
+    echo
+    echo "${scan} SV sweep genes:"
+    wc -l ${GENE_IDS}
+
+    echo
+    echo "${scan} all isoform proteins:"
+    grep -c "^>" ${ALL_PROTEINS} || true
+
+    echo
+    echo "${scan} one-isoform proteins:"
+    grep -c "^>" ${ONE_ISOFORM} || true
+
+done
+
+echo
+echo "Done."
+EOF
+
+chmod +x 04_extract_sv_sweep_proteins_v5.sh
+###################################################
+mamba activate eggnog_env
+
+EGGNOG_DB=/data1/jkitony/Baobab/eggnog/eggnog-mapper/eggnog_data
+
+mkdir -p eggnog_results_sv/domestication eggnog_results_sv/improvement
+
+emapper.py \
+  -i XPCLRS_SV/annotation/domestication.SV.top1.proteins.one_isoform.fa \
+  --itype proteins \
+  --output domestication_SV_top1 \
+  --output_dir eggnog_results_sv/domestication \
+  --data_dir ${EGGNOG_DB} \
+  --cpu 45
+
+emapper.py \
+  -i XPCLRS_SV/annotation/improvement.SV.top1.proteins.one_isoform.fa \
+  --itype proteins \
+  --output improvement_SV_top1 \
+  --output_dir eggnog_results_sv/improvement \
+  --data_dir ${EGGNOG_DB} \
+  --cpu 45
