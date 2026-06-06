@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+
+import os
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import chardet
+from matplotlib.backends.backend_pdf import PdfPages
+
+INPUT = "Meta_FINAL.csv"
+OUTDIR = "metadata_QC_outputs"
+os.makedirs(OUTDIR, exist_ok=True)
+
+# ---------- Load file safely ----------
+with open(INPUT, "rb") as f:
+    encoding = chardet.detect(f.read(100000))["encoding"]
+
+print(f"Detected encoding: {encoding}")
+
+meta = pd.read_csv(INPUT, encoding=encoding)
+meta = meta.fillna("Unknown")
+
+# ---------- Clean columns ----------
+meta.columns = meta.columns.str.strip()
+
+for col in ["Species", "Germplasm_type", "Country", "Location", "Maturity_group"]:
+    meta[col] = meta[col].astype(str).str.strip()
+    meta[col] = meta[col].replace({"NA": "Unknown", "nan": "Unknown", "": "Unknown"})
+
+# ---------- Define orders ----------
+germ_order = ["Wild", "Landrace", "Improved", "Unknown"]
+species_order = ["G.soja", "G.max", "Unknown"]
+mg_order = [
+    "MG_000", "MG_00", "MG_0", "MG_I", "MG_II", "MG_III",
+    "MG_IV", "MG_V", "MG_VI", "MG_VII", "MG_VIII", "MG_IX",
+    "Unknown"
+]
+
+north = ["MG_000", "MG_00", "MG_0", "MG_I", "MG_II"]
+mid = ["MG_III", "MG_IV"]
+south = ["MG_V", "MG_VI", "MG_VII", "MG_VIII", "MG_IX"]
+
+def assign_adaptation_group(mg):
+    if mg in north:
+        return "North/Early"
+    elif mg in mid:
+        return "Central/Mid"
+    elif mg in south:
+        return "South/Late"
+    else:
+        return "Unknown"
+
+meta["Adaptation_group"] = meta["Maturity_group"].apply(assign_adaptation_group)
+
+adapt_order = ["North/Early", "Central/Mid", "South/Late", "Unknown"]
+
+# ---------- Create analysis subsets ----------
+domestication = meta[meta["Germplasm_type"].isin(["Wild", "Landrace"])]
+improvement = meta[meta["Germplasm_type"].isin(["Landrace", "Improved"])]
+overall = meta[meta["Germplasm_type"].isin(["Wild", "Improved"])]
+species_comp = meta[meta["Species"].isin(["G.soja", "G.max"])]
+adaptation = meta[meta["Adaptation_group"].isin(["North/Early", "South/Late"])]
+
+# ---------- Summary tables ----------
+summary = pd.DataFrame({
+    "Analysis": [
+        "Domestication",
+        "Improvement",
+        "Overall domestication + breeding",
+        "Species comparison",
+        "Adaptation"
+    ],
+    "Comparison": [
+        "Wild vs Landrace",
+        "Landrace vs Improved",
+        "Wild vs Improved",
+        "G.soja vs G.max",
+        "North/Early vs South/Late"
+    ],
+    "N_samples": [
+        domestication.shape[0],
+        improvement.shape[0],
+        overall.shape[0],
+        species_comp.shape[0],
+        adaptation.shape[0]
+    ]
+})
+
+summary.to_csv(f"{OUTDIR}/analysis_summary_table.csv", index=False)
+meta.to_csv(f"{OUTDIR}/Meta_FINAL_cleaned.csv", index=False)
+
+pd.crosstab(meta["Species"], meta["Germplasm_type"]).to_csv(
+    f"{OUTDIR}/species_by_germplasm_type.csv"
+)
+
+pd.crosstab(meta["Germplasm_type"], meta["Maturity_group"]).to_csv(
+    f"{OUTDIR}/germplasm_type_by_maturity_group.csv"
+)
+
+pd.crosstab(meta["Adaptation_group"], meta["Maturity_group"]).to_csv(
+    f"{OUTDIR}/adaptation_group_by_maturity_group.csv"
+)
+
+print("\nAnalysis summary")
+print(summary)
+
+# ---------- Plot helper ----------
+sns.set(style="whitegrid")
+
+plot_files = []
+
+def save_plot(filename):
+    png = f"{OUTDIR}/{filename}.png"
+    pdf = f"{OUTDIR}/{filename}.pdf"
+    plt.tight_layout()
+    plt.savefig(png, dpi=300)
+    plt.savefig(pdf)
+    plot_files.append(png)
+    plt.close()
+
+# 1. Germplasm type
+plt.figure(figsize=(6, 4))
+sns.countplot(data=meta, x="Germplasm_type", order=germ_order)
+plt.title("Sample counts by germplasm type")
+plt.xlabel("Germplasm type")
+plt.ylabel("Number of samples")
+save_plot("01_germplasm_type_counts")
+
+# 2. Species
+plt.figure(figsize=(5, 4))
+sns.countplot(data=meta, x="Species", order=species_order)
+plt.title("Sample counts by species")
+plt.xlabel("Species")
+plt.ylabel("Number of samples")
+save_plot("02_species_counts")
+
+# 3. Maturity group
+plt.figure(figsize=(11, 4))
+sns.countplot(data=meta, x="Maturity_group", order=mg_order)
+plt.title("Sample counts by maturity group")
+plt.xlabel("Maturity group")
+plt.ylabel("Number of samples")
+plt.xticks(rotation=45)
+save_plot("03_maturity_group_counts")
+
+# 4. Species x Germplasm type
+tab1 = pd.crosstab(meta["Species"], meta["Germplasm_type"])
+tab1 = tab1.reindex(index=species_order, columns=germ_order, fill_value=0)
+
+plt.figure(figsize=(7, 4))
+sns.heatmap(tab1, annot=True, fmt="d", cmap="Blues")
+plt.title("Species by germplasm type")
+plt.xlabel("Germplasm type")
+plt.ylabel("Species")
+save_plot("04_species_by_germplasm_type")
+
+# 5. Germplasm type x Maturity group
+tab2 = pd.crosstab(meta["Germplasm_type"], meta["Maturity_group"])
+tab2 = tab2.reindex(index=germ_order, columns=mg_order, fill_value=0)
+
+plt.figure(figsize=(13, 4))
+sns.heatmap(tab2, annot=True, fmt="d", cmap="Greens")
+plt.title("Germplasm type by maturity group")
+plt.xlabel("Maturity group")
+plt.ylabel("Germplasm type")
+save_plot("05_germplasm_type_by_maturity_group")
+
+# 6. Adaptation group
+plt.figure(figsize=(7, 4))
+sns.countplot(data=meta, x="Adaptation_group", order=adapt_order)
+plt.title("Sample counts by adaptation group")
+plt.xlabel("Adaptation group")
+plt.ylabel("Number of samples")
+save_plot("06_adaptation_group_counts")
+
+# 7. Analysis subset sizes
+plt.figure(figsize=(9, 4))
+sns.barplot(data=summary, x="Analysis", y="N_samples")
+plt.title("Sample sizes for planned selection analyses")
+plt.xlabel("Analysis")
+plt.ylabel("Number of samples")
+plt.xticks(rotation=30, ha="right")
+save_plot("07_analysis_sample_sizes")
+
+# ---------- One combined PDF ----------
+combined_pdf = f"{OUTDIR}/metadata_QC_report.pdf"
+
+with PdfPages(combined_pdf) as pdf:
+    # Summary page
+    fig, ax = plt.subplots(figsize=(11, 6))
+    ax.axis("off")
+    ax.set_title("Metadata QC summary", fontsize=16, pad=20)
+
+    table = ax.table(
+        cellText=summary.values,
+        colLabels=summary.columns,
+        loc="center",
+        cellLoc="center"
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(9)
+    table.scale(1, 1.5)
+    pdf.savefig(fig, bbox_inches="tight")
+    plt.close()
+
+    # Plot pages
+    for png in plot_files:
+        img = plt.imread(png)
+        fig, ax = plt.subplots(figsize=(11, 7))
+        ax.imshow(img)
+        ax.axis("off")
+        pdf.savefig(fig, bbox_inches="tight")
+        plt.close()
+
+print(f"\nDone. Outputs written to: {OUTDIR}")
+print(f"Combined PDF report: {combined_pdf}")
