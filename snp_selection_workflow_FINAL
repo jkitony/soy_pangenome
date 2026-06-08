@@ -1,5 +1,69 @@
+/data1/jkitony/soybean/snp_selection_workflow/
+#Required files:
+Meta_FINAL.csv
+soy.snp.bi.filt.vcf.gz
+Wm82a5.gene_models_main.renamed.gff3
+Wm82a5.protein.renamed.faa
+go-basic.obo
+xpclrs.sif
+
+#####
+cd /data1/jkitony/soybean
+mkdir -p snp_selection_workflow
+cd snp_selection_workflow
+unzip soy_snp_selection_fresh_workflow.zip
+cp soy_snp_selection_fresh_workflow/* .
+######
+bash 00_setup_project.sh
+python 01_metadata_report.py --meta Meta_FINAL.csv --outdir 01_metadata_report
+python 02_make_sample_lists_from_meta.py --meta Meta_FINAL.csv --outdir 00_sample_lists
+bash 03_prepare_vcf.sh
+bash 04_run_xpclr_snp_all_comparisons.sh
+bash 05_extract_snp_sweep_genes_all_comparisons.sh
+bash 06_extract_snp_sweep_proteins_all_comparisons.sh
+bash 07_make_wm82a5_background_proteins.sh
+bash 08_run_eggnog_snp_all_comparisons.sh
+python 09_go_enrichment_snp_all_comparisons.py
+python 10_make_snp_function_table_all_comparisons.py
+##########################################################################################
+##########################################################################################
+#PI not Sample in meta and vcf
+cd /data1/jkitony/soybean
+mkdir -p sv_selection_workflow
+cd sv_selection_workflow
+unzip soy_sv_selection_fresh_workflow.zip
+cp soy_sv_selection_fresh_workflow/* .
+
+#Put these in sv_selection_workflow/:
+Meta_FINAL.csv
+Wm82a5.gene_models_main.renamed.gff3
+Wm82a5.protein.renamed.faa
+go-basic.obo
+xpclrs.sif
+#Put these in sv_selection_workflow/02_sv/:
+soy.SVmarkers.filt.bcf
+soy.SVmarkers.filt.bcf.csi
+soy.SVmarkers.filt.vcf.gz
+soy.SVmarkers.filt.vcf.gz.tbi
+soy.SVmarkers.tags.vcf.gz
+soy.SVmarkers.tags.vcf.gz.tbi
+###
+bash 00_setup_project.sh
+python 01_metadata_report.py --meta Meta_FINAL.csv --outdir 01_metadata_report
+python 02_make_sample_lists_from_meta.py --meta Meta_FINAL.csv --outdir 00_sample_lists --sample_col PI
 
 
+ 
+
+bash 03_prepare_sv.sh
+bash 04_run_xpclr_sv_all_comparisons.sh
+bash 05_extract_sv_sweep_genes_all_comparisons.sh
+bash 06_extract_sv_sweep_proteins_all_comparisons.sh
+bash 07_make_wm82a5_background_proteins.sh
+bash 08_run_eggnog_sv_all_comparisons.sh
+python 09_go_enrichment_sv_all_comparisons.py
+python 10_make_sv_function_table_all_comparisons.py
+##########################################################################################
 ##########################################################################################
 #root@jkitony:/mnt/c/Soybean/snp_selection_workflow# docker xpclr
 unzip snp_selection_workflow.zip
