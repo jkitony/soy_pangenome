@@ -1,3 +1,23 @@
+(base) [ jkitony@10.7.30.227:/data1/jkitony/soybean/
+unzip snp_selection_workflow.zip
+cd sv_selection_workflow
+
+python 00_make_sample_lists_from_meta.py --meta Meta_FINAL.csv --outdir 00_sample_lists
+
+./02_run_xpclr_snp_all_comparisons.sh
+./03_extract_snp_sweep_genes_all_comparisons.sh
+./04_extract_snp_sweep_proteins_all_comparisons.sh
+./05_make_wm82a5_background_proteins.sh
+
+mamba activate eggnog_env
+./06_run_eggnog_snp_all_comparisons.sh
+
+mamba activate goenv
+python 07_go_enrichment_snp_all_comparisons.py
+python 08_make_snp_function_table_all_comparisons.py
+
+
+##########################################################################################
 #root@jkitony:/mnt/c/Soybean/snp_selection_workflow# docker xpclr
 unzip snp_selection_workflow.zip
 cd snp_selection_workflow
