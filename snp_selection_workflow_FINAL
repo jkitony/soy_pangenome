@@ -48,18 +48,19 @@ soy.SVmarkers.filt.vcf.gz.tbi
 soy.SVmarkers.tags.vcf.gz
 soy.SVmarkers.tags.vcf.gz.tbi
 ###
+mamba activate soy_selection
 bash 00_setup_project.sh
 python 01_metadata_report.py --meta Meta_FINAL.csv --outdir 01_metadata_report
 python 02_make_sample_lists_from_meta.py --meta Meta_FINAL.csv --outdir 00_sample_lists --sample_col PI
-
-
- 
-
 bash 03_prepare_sv.sh
 bash 04_run_xpclr_sv_all_comparisons.sh
 bash 05_extract_sv_sweep_genes_all_comparisons.sh
+
+conda deactivate
 bash 06_extract_sv_sweep_proteins_all_comparisons.sh
 bash 07_make_wm82a5_background_proteins.sh
+
+mamba activate eggnog_env
 bash 08_run_eggnog_sv_all_comparisons.sh
 python 09_go_enrichment_sv_all_comparisons.py
 python 10_make_sv_function_table_all_comparisons.py
