@@ -20,6 +20,8 @@ python 02_make_sample_lists_from_meta.py --meta Meta_FINAL.csv --outdir 00_sampl
 bash 03_prepare_vcf.sh
 bash 04_run_xpclr_snp_all_comparisons.sh
 bash 05_extract_snp_sweep_genes_all_comparisons.sh
+
+conda deactivate
 bash 06_extract_snp_sweep_proteins_all_comparisons.sh
 bash 07_make_wm82a5_background_proteins.sh
 bash 08_run_eggnog_snp_all_comparisons.sh
