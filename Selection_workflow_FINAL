@@ -206,6 +206,84 @@ xxxxxxxxxxxxxxx
 | Species SV       | flavonoid/isoflavonoid/triterpenoid        | isoflavonoid/flavonoid enzyme             |
 
 xxxxxxxxxxxxxxx
+#search each known gene directly in the full XP-CLR output and rank by highest score:
+#SNP:(base) [ jkitony@10.7.30.227:/data1/jkitony/soybean/snp_selection_workflow ]$
+cat > rank_known_genes_by_xpclr.py << 'EOF'
+#!/usr/bin/env python3
+
+import pandas as pd
+import re
+from pathlib import Path
+
+known = [
+    "Pdh1", "PDH1", "Sh1", "SHAT", "Dt1", "Dt2", "L1",
+    "Tof12", "PRR3", "E1", "E2", "E3", "E4", "GI",
+    "J", "Tof11", "PRR37", "SWEET39", "OLEO1"
+]
+
+files = sorted(Path("05_annotation").glob("*.selected_genes.tsv"))
+
+rows = []
+
+def extract_gene_id(attr):
+    m = re.search(r"ID=([^;]+)", str(attr))
+    return m.group(1) if m else "NA"
+
+for f in files:
+    scan = f.name.split(".")[0]
+
+    df = pd.read_csv(f, sep="\t", header=None)
+
+    # GFF columns 0-8, BED/XPCLR columns after that
+    df["Gene_ID"] = df[8].apply(extract_gene_id)
+    df["Gene_text"] = df.astype(str).agg(" ".join, axis=1)
+
+    for k in known:
+        sub = df[df["Gene_text"].str.contains(k, case=False, regex=False)].copy()
+        if sub.empty:
+            continue
+
+        for _, r in sub.iterrows():
+            numeric_vals = pd.to_numeric(r, errors="coerce")
+            xpclr_score = numeric_vals.max()
+
+            rows.append({
+                "Known_query": k,
+                "Scan": scan,
+                "Gene_ID": r["Gene_ID"],
+                "Chr": r[0],
+                "Gene_start": r[3],
+                "Gene_end": r[4],
+                "Best_numeric_score_in_row": xpclr_score,
+                "Full_row": "\t".join(map(str, r.tolist()))
+            })
+
+out = pd.DataFrame(rows)
+
+if out.empty:
+    print("No known genes found.")
+else:
+    out = out.sort_values("Best_numeric_score_in_row", ascending=False)
+    out.to_csv("known_genes_ranked_by_xpclr.tsv", sep="\t", index=False)
+
+    print(out[[
+        "Known_query",
+        "Scan",
+        "Gene_ID",
+        "Chr",
+        "Gene_start",
+        "Gene_end",
+        "Best_numeric_score_in_row"
+    ]].head(50).to_string(index=False))
+
+    print("\nSaved: known_genes_ranked_by_xpclr.tsv")
+EOF
+
+python rank_known_genes_by_xpclr.py
+
+############################################
+#SV :(base) [ jkitony@10.7.30.227:/data1/jkitony/soybean/sv_selection_workflow ]$
+
 ##########################################################################################
 ##########################################################################################
 #root@jkitony:/mnt/c/Soybean/snp_selection_workflow# docker xpclr
