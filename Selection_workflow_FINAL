@@ -140,6 +140,72 @@ python ../selection_panel_addon/15_plot_gene_model_panel.py \
   --gene Gmax_Wm82a5.Chr01.g004470 \
   --outfile_prefix gene_model_Gmax_Wm82a5_Chr01_g004470
 
+
+#known-gene table
+cat > known_soybean_selection_genes.tsv << 'EOF'
+Gene_symbol	Category	Expected_comparison
+Sh1	shattering	domestication
+SHAT1-5	shattering	domestication
+Pdh1	pod dehiscence	domestication
+L1	seed coat	domestication
+Dt1	growth habit	domestication
+Dt2	growth habit	domestication
+E1	photoperiod	improvement
+E2	photoperiod/domestication	improvement
+E3	photoperiod	improvement
+E4	photoperiod	improvement
+J	photoperiod/improvement	improvement
+Tof11	latitude adaptation	improvement
+Tof12	latitude adaptation/domestication	domestication
+PRR3	latitude adaptation	domestication
+PRR37	latitude adaptation	improvement
+SWEET39	oil/protein	improvement
+OLEO1	oil body/improvement	improvement
+EOF
+
+#search annotation table
+grep -iE "Sh1|SHAT|Pdh1|Dt1|Dt2|Tof11|Tof12|PRR3|PRR37|SWEET39|OLEO1|E1|E2|E3|E4|J" \
+  08_tables/xpclr_SNP_top1_functional_annotation_table.tsv \
+  > known_genes_in_SNP_sweeps.tsv
+
+grep -iE "Sh1|SHAT|Pdh1|Dt1|Dt2|Tof11|Tof12|PRR3|PRR37|SWEET39|OLEO1|E1|E2|E3|E4|J" \
+  ../sv_selection_workflow/05_annotation_sv/xpclr_SV_top1_functional_annotation_table.tsv \
+  > known_genes_in_SV_sweeps.tsv
+xxxxxxxxxxxxxxx
+| Comparison           | Known gene type                                                 |
+| -------------------- | --------------------------------------------------------------- |
+| Wild vs Landrace     | **Sh1, SHAT1-5, Pdh1, Dt1, Dt2, E2/GI, Tof12/PRR3**             |
+| Landrace vs Improved | **E/J, Tof11, PRR37, SWEET39, OLEO1, disease-resistance genes** |
+
+xxxxxxxxxxxxxxx
+#novel SV candidate
+#Search novel SV candidates:
+grep -iE "flavonol|flavone|flavonoid|isoflavonoid|quercetin|glycosyltransferase|cutin|chromatin remodel|ATP-dependent chromatin|MAP kinase|hypoxia|salt" \
+  ../sv_selection_workflow/05_annotation_sv/xpclr_SV_top1_functional_annotation_table.tsv \
+  > novel_SV_candidate_genes.tsv
+
+head -50 novel_SV_candidate_genes.tsv
+
+#plot gene models:
+python ../selection_panel_addon/15_plot_gene_model_panel.py \
+  --gff Wm82a5.gene_models_main.renamed.gff3 \
+  --gene KNOWN_GENE_ID \
+  --outfile_prefix panel_D_known_selected_gene
+
+python ../selection_panel_addon/15_plot_gene_model_panel.py \
+  --gff Wm82a5.gene_models_main.renamed.gff3 \
+  --gene NOVEL_SV_GENE_ID \
+  --outfile_prefix panel_E_novel_SV_candidate_gene
+
+xxxxxxxxxxxxxxx
+| Comparison       | Strong SV signal                           | Good novel candidate type                 |
+| ---------------- | ------------------------------------------ | ----------------------------------------- |
+| Domestication SV | flavonoid/flavonol/isoflavonoid metabolism | UDP-glycosyltransferase, flavonoid enzyme |
+| Improvement SV   | cutin, hypoxia, salt/biotic response       | cutin biosynthesis, MAPK phosphatase      |
+| Adaptation SV    | chromatin remodeling                       | ATP-dependent chromatin remodeler         |
+| Species SV       | flavonoid/isoflavonoid/triterpenoid        | isoflavonoid/flavonoid enzyme             |
+
+xxxxxxxxxxxxxxx
 ##########################################################################################
 ##########################################################################################
 #root@jkitony:/mnt/c/Soybean/snp_selection_workflow# docker xpclr
