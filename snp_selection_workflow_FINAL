@@ -64,8 +64,37 @@ bash 07_make_wm82a5_background_proteins.sh
 
 mamba activate eggnog_env
 bash 08_run_eggnog_sv_all_comparisons.sh
+
+mamba activate goenv
 python 09_go_enrichment_sv_all_comparisons.py
 python 10_make_sv_function_table_all_comparisons.py
+
+#####################################################
+#MANUCSRIPT
+#1. SV sweep summary
+head -20 05_annotation_sv/xpclr_SV_top1_summary.tsv
+#2. SV GO enrichment results
+for f in 07_go_sv/*SV_GO_enrichment_real_background.tsv; do
+    echo "================================================"
+    echo $f
+    head -20 $f
+done
+#3. SV functional annotation table
+head -50 05_annotation_sv/xpclr_SV_top1_functional_annotation_table.tsv
+
+#4. Top SV sweep windows
+ls -lh 04_xpclr_sv/plots/*top1.full.tsv
+for f in 04_xpclr_sv/plots/*top1.full.tsv; do
+    echo "================================================"
+    echo $f
+    head -10 $f
+done
+
+#5. (Most important) Shared genes among SV comparisons
+grep shared 05_annotation_sv/xpclr_SV_top1_summary.tsv
+or
+cat 05_annotation_sv/xpclr_SV_top1_summary.tsv
+
 ##########################################################################################
 ##########################################################################################
 #root@jkitony:/mnt/c/Soybean/snp_selection_workflow# docker xpclr
