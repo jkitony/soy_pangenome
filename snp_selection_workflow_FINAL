@@ -95,6 +95,51 @@ grep shared 05_annotation_sv/xpclr_SV_top1_summary.tsv
 or
 cat 05_annotation_sv/xpclr_SV_top1_summary.tsv
 
+
+
+############################################################################################
+#ADD-ON
+#cd /data1/jkitony/soybean
+unzip selection_panel_addon_workflow.zip
+mv selection_panel_addon_workflow selection_panel_addon
+
+#Run SNP FST/π:
+cd /data1/jkitony/soybean/snp_selection_workflow
+cp ../selection_panel_addon/11_run_snp_fst_pi_all_comparisons.sh .
+cp ../selection_panel_addon/12_plot_stacked_selection_tracks.py .
+
+bash 11_run_snp_fst_pi_all_comparisons.sh
+python 12_plot_stacked_selection_tracks.py --variant SNP --base .
+
+#Run SV FST/π:
+cd /data1/jkitony/soybean/sv_selection_workflow
+cp ../selection_panel_addon/11_run_sv_fst_pi_all_comparisons.sh .
+cp ../selection_panel_addon/12_plot_stacked_selection_tracks.py .
+
+bash 11_run_sv_fst_pi_all_comparisons.sh
+python 12_plot_stacked_selection_tracks.py --variant SV --base .
+
+#Make SNP–SV comparison plots:upset
+cd /data1/jkitony/soybean
+
+python selection_panel_addon/13_make_snp_sv_comparison_plots.py \
+  --project_root /data1/jkitony/soybean
+
+#Expression panel
+cd /data1/jkitony/soybean
+
+python selection_panel_addon/14_extract_and_plot_expression_for_sweeps.py \
+  --project_root /data1/jkitony/soybean \
+  --expr Expression/PangenomeAll_vs_Wm82a5.gene_counts.tsv
+
+#Example gene model panel:
+cd /data1/jkitony/soybean/snp_selection_workflow
+
+python ../selection_panel_addon/15_plot_gene_model_panel.py \
+  --gff Wm82a5.gene_models_main.renamed.gff3 \
+  --gene Gmax_Wm82a5.Chr01.g004470 \
+  --outfile_prefix gene_model_Gmax_Wm82a5_Chr01_g004470
+
 ##########################################################################################
 ##########################################################################################
 #root@jkitony:/mnt/c/Soybean/snp_selection_workflow# docker xpclr
