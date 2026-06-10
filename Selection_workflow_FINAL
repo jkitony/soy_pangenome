@@ -431,3 +431,67 @@ print(f"Saved: {args.out}.pdf")
 EOF
 
 chmod +x plot_gene_structure.py
+############################################################
+############################################################
+############################################################
+#FOCUS
+###########################################################
+cd /data1/jkitony/soybean/snp_selection_workflow
+
+cp ../selection_panel_addon/11_run_snp_fst_pi_all_comparisons.sh .
+
+bash 11_run_snp_fst_pi_all_comparisons.sh
+
+
+cd /data1/jkitony/soybean/snp_selection_workflow
+cd /data1/jkitony/soybean/snp_selection_workflow
+
+ln -s 09_popgen_snp 09_fst_pi
+
+python ../selection_panel_addon/12_plot_stacked_selection_tracks.py \
+  --variant SNP \
+  --base . \
+  --scan adaptation \
+  --width 4.5 \
+  --track_height 0.7
+#############
+#Ratio
+cd /data1/jkitony/soybean/snp_selection_workflow
+
+python - << 'PY'
+import pandas as pd
+
+a = pd.read_csv(
+    "09_popgen_snp/pi/adaptation.North_Early.SNP.windowed.pi",
+    sep="\t"
+)
+
+b = pd.read_csv(
+    "09_popgen_snp/pi/adaptation.South_Late.SNP.windowed.pi",
+    sep="\t"
+)
+
+# merge by window
+m = a.merge(
+    b,
+    on=["CHROM","BIN_START","BIN_END"],
+    suffixes=("_north","_south")
+)
+
+# avoid division by zero
+m["pi_ratio"] = (
+    m["PI_north"] + 1e-12
+) / (
+    m["PI_south"] + 1e-12
+)
+
+m.to_csv(
+    "09_popgen_snp/pi/adaptation.pi_ratio.tsv",
+    sep="\t",
+    index=False
+)
+
+print(m.head())
+print("\nSaved:")
+print("09_popgen_snp/pi/adaptation.pi_ratio.tsv")
+PY
