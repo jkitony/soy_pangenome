@@ -495,3 +495,35 @@ print(m.head())
 print("\nSaved:")
 print("09_popgen_snp/pi/adaptation.pi_ratio.tsv")
 PY
+######################################
+(base) [ jkitony@10.7.30.227:/data1/jkitony/soybean/sv_selection_workflow ]$
+#Create the SV π-ratio:
+python - << 'PY'
+import pandas as pd
+
+a = pd.read_csv("09_popgen_sv/pi/adaptation.North_Early.SV.windowed.pi", sep="\t")
+b = pd.read_csv("09_popgen_sv/pi/adaptation.South_Late.SV.windowed.pi", sep="\t")
+
+m = a.merge(
+    b,
+    on=["CHROM", "BIN_START", "BIN_END"],
+    suffixes=("_north", "_south")
+)
+
+m["pi_ratio"] = (m["PI_north"] + 1e-12) / (m["PI_south"] + 1e-12)
+
+m.to_csv("09_popgen_sv/pi/adaptation.pi_ratio.tsv", sep="\t", index=False)
+
+print(m.head())
+print("Saved: 09_popgen_sv/pi/adaptation.pi_ratio.tsv")
+PY
+###
+#FINAL PLOT
+cd /data1/jkitony/soybean/sv_selection_workflow
+
+python ../selection_panel_addon/12_plot_stacked_selection_tracks.py \
+  --variant SV \
+  --base . \
+  --scan adaptation \
+  --width 4.5 \
+  --track_height 0.7
