@@ -527,3 +527,323 @@ python ../selection_panel_addon/12_plot_stacked_selection_tracks.py \
   --scan adaptation \
   --width 4.5 \
   --track_height 0.7
+
+###################
+cd /data1/jkitony/soybean/snp_selection_workflow
+
+awk '$1=="glyma.Wm82.gnm5.Chr10" && $3=="gene" && $4<=3340000 && $5>=1240000' \
+  Wm82a5.gene_models_main.renamed.gff3 \
+  | sed -n 's/.*ID=\([^;]*\);.*/\1/p' \
+  > Chr10_1.24_3.34Mb_NEW_gene_ids.txt
+
+#Now annotate:
+grep -Ff Chr10_1.24_3.34Mb_NEW_gene_ids.txt \
+  08_tables/xpclr_SNP_top1_functional_annotation_table.tsv \
+  > Chr10_1.24_3.34Mb_adaptation_gene_annotations.tsv
+
+wc -l Chr10_1.24_3.34Mb_adaptation_gene_annotations.tsv
+head Chr10_1.24_3.34Mb_adaptation_gene_annotations.tsv
+
+
+#####################################################
+####################################################
+#Plot MYB12
+Chr10 2240001 2340000 ... XPCLR=29.51
+#####################################################
+cd /data1/jkitony/soybean/snp_selection_workflow
+
+cat > plot_local_MYB12_adaptation_smooth.py << 'EOF'
+#!/usr/bin/env python3
+
+import pandas as pd
+import matplotlib.pyplot as plt
+
+CHROM = "Chr10"
+START = 1240000
+END = 2340000
+GENE_START = 1306654
+GENE_END = 1310972
+
+XPCLR = "04_xpclr/combined/adaptation.full.tsv"
+FST = "09_popgen_snp/fst/adaptation.SNP.windowed.weir.fst"
+PI_RATIO = "09_popgen_snp/pi/adaptation.pi_ratio.tsv"
+
+OUT = "local_Myb12_SNP_adaptation_XPCLR_FST_PIratio"
+
+def smooth(y, window=5):
+    return y.rolling(window=window, center=True, min_periods=1).mean()
+
+def read_xpclr():
+    df = pd.read_csv(XPCLR, sep="\t")
+    df["mid"] = (df["start"] + df["stop"]) / 2
+    df["value"] = pd.to_numeric(df["xpclr"], errors="coerce")
+    return df[(df["chrom"] == CHROM) & (df["mid"] >= START) & (df["mid"] <= END)].copy()
+
+def read_fst():
+    df = pd.read_csv(FST, sep="\t")
+    df = df.rename(columns={
+        "CHROM": "chrom",
+        "BIN_START": "start",
+        "BIN_END": "stop",
+        "WEIGHTED_FST": "value"
+    })
+    df["mid"] = (df["start"] + df["stop"]) / 2
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    return df[(df["chrom"] == CHROM) & (df["mid"] >= START) & (df["mid"] <= END)].copy()
+
+def read_pi():
+    df = pd.read_csv(PI_RATIO, sep="\t")
+    df = df.rename(columns={
+        "CHROM": "chrom",
+        "BIN_START": "start",
+        "BIN_END": "stop",
+        "pi_ratio": "value"
+    })
+    df["mid"] = (df["start"] + df["stop"]) / 2
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    return df[(df["chrom"] == CHROM) & (df["mid"] >= START) & (df["mid"] <= END)].copy()
+
+tracks = [
+    ("XP-CLR", read_xpclr()),
+    (r"$F_{ST}$", read_fst()),
+    (r"$\pi_N/\pi_S$", read_pi()),
+]
+
+fig, axes = plt.subplots(
+    3, 1,
+    figsize=(1.5, 1.5),
+    sharex=True,
+    gridspec_kw={"hspace": 0.12}
+)
+
+for ax, (label, df) in zip(axes, tracks):
+    df = df.sort_values("mid")
+    df["smooth"] = smooth(df["value"], window=5)
+
+    ax.plot(df["mid"] / 1e6, df["smooth"], linewidth=0.8)
+    ax.axvspan(GENE_START / 1e6, GENE_END / 1e6, alpha=0.25)
+
+    ax.set_ylabel(label, fontsize=5)
+    ax.tick_params(axis="both", labelsize=4, length=1.5, width=0.4)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_linewidth(0.4)
+    ax.spines["bottom"].set_linewidth(0.4)
+
+axes[-1].set_xlabel("Chr10 position (Mb)", fontsize=5)
+
+plt.tight_layout(pad=0.2)
+plt.savefig(OUT + ".png", dpi=600, bbox_inches="tight")
+plt.savefig(OUT + ".pdf", bbox_inches="tight")
+plt.close()
+
+print("Saved:", OUT + ".png")
+print("Saved:", OUT + ".pdf")
+EOF
+
+python plot_local_MYB12_adaptation_smooth.py
+###################################################
+#Confirm:sort -k11,11gr 04_xpclr/plots/adaptation_SNP_XPCLR.top1.full.tsv | head -1
+############
+awk '
+$1=="glyma.Wm82.gnm5.Chr10" &&
+$3=="gene" &&
+$4<=2790000 &&
+$5>=1790000
+' Wm82a5.gene_models_main.renamed.gff3 \
+> Chr10_peak_500kb.gff3
+
+###
+awk -F'\t' '
+BEGIN{
+  peak=2290000;
+  print "Gene\tStart\tEnd\tMidpoint\tDistance"
+}
+$3=="gene"{
+  split($9,a,";");
+  sub("ID=","",a[1]);
+  gene=a[1];
+
+  mid=int(($4+$5)/2);
+  dist=(mid>peak)?mid-peak:peak-mid;
+
+  print gene"\t"$4"\t"$5"\t"mid"\t"dist
+}' Chr10_peak_500kb.gff3 \
+| sort -k5,5n \
+> Chr10_peak_gene_distances.tsv
+
+head -20 Chr10_peak_gene_distances.tsv
+
+###
+cut -f1 Chr10_peak_gene_distances.tsv | tail -n +2 > Chr10_peak_ranked_gene_ids.txt
+
+grep -Ff Chr10_peak_ranked_gene_ids.txt \
+  08_tables/xpclr_SNP_top1_functional_annotation_table.tsv \
+  > Chr10_peak_ranked_functional_annotations.tsv
+
+cut -f1,3,4,6,8,10 Chr10_peak_ranked_functional_annotations.tsv \
+  | column -t -s $'\t' | less -S
+
+##
+for g in $(tail -n +2 Chr10_peak_gene_distances.tsv | head -20 | cut -f1); do
+  grep -m1 "ID=${g};" Wm82a5.gene_models_main.renamed.gff3
+done > Chr10_peak_top20_gene_notes.gff3
+
+cut -f1,4,5,9 Chr10_peak_top20_gene_notes.gff3 | less -S
+
+#################
+TIME FOR COFFEE (Gmax_Wm82a5.Chr10.g002550) ⭐
+FAF meristem regulator (Gmax_Wm82a5.Chr10.g002490) ⭐
+OVATE transcriptional repressor (Gmax_Wm82a5.Chr10.g002600) ⭐
+bHLH transcription factor (Gmax_Wm82a5.Chr10.g002450)
+
+###############################################################################
+###############################################################################
+###############################################################################
+###############################################################################
+###############################################################################
+###############################################################################
+#FINAL CANDIDATE
+###############################################################################
+###############################################################################
+cd /data1/jkitony/soybean/snp_selection_workflow
+
+cat > plot_local_TIC_2.20_2.45Mb_adaptation_final.py << 'EOF'
+#!/usr/bin/env python3
+
+import pandas as pd
+import matplotlib.pyplot as plt
+
+CHROM = "Chr10"
+START = 2200000
+END   = 2450000
+
+CANDIDATES = {
+    "bHLH":  2260432,
+    "FAF":   2298523,
+    "TIC★":  2367353,
+    "OVATE": 2397880,
+}
+
+XPCLR = "04_xpclr/combined/adaptation.full.tsv"
+FST = "09_popgen_snp/fst/adaptation.SNP.windowed.weir.fst"
+PI_RATIO = "09_popgen_snp/pi/adaptation.pi_ratio.tsv"
+
+OUT = "Chr10_2.20_2.45Mb_TIC_region_SNP_adaptation_final"
+
+def read_xpclr():
+    df = pd.read_csv(XPCLR, sep="\t")
+    df["mid"] = (pd.to_numeric(df["start"]) + pd.to_numeric(df["stop"])) / 2
+    df["value"] = pd.to_numeric(df["xpclr"], errors="coerce")
+    return df[["chrom", "mid", "value"]].dropna()
+
+def read_fst():
+    df = pd.read_csv(FST, sep="\t")
+    df = df.rename(columns={
+        "CHROM": "chrom",
+        "BIN_START": "start",
+        "BIN_END": "stop",
+        "WEIGHTED_FST": "value"
+    })
+    df["mid"] = (pd.to_numeric(df["start"]) + pd.to_numeric(df["stop"])) / 2
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    return df[["chrom", "mid", "value"]].dropna()
+
+def read_pi_ratio():
+    df = pd.read_csv(PI_RATIO, sep="\t")
+    df = df.rename(columns={
+        "CHROM": "chrom",
+        "BIN_START": "start",
+        "BIN_END": "stop",
+        "pi_ratio": "value"
+    })
+    df["mid"] = (pd.to_numeric(df["start"]) + pd.to_numeric(df["stop"])) / 2
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    return df[["chrom", "mid", "value"]].dropna()
+
+xp = read_xpclr()
+fst = read_fst()
+pi = read_pi_ratio()
+
+tracks = [
+    ("XP-CLR", xp, 0.99),
+    (r"$F_{ST}$", fst, 0.99),
+    (r"$\pi_N/\pi_S$", pi, 0.01),
+]
+
+fig, axes = plt.subplots(
+    3, 1,
+    figsize=(1.5, 1.5),
+    sharex=True,
+    constrained_layout=True,
+    gridspec_kw={"hspace": 0.05}
+)
+
+for ax, (label, full, threshold_q) in zip(axes, tracks):
+
+    sub = full[
+        (full["chrom"] == CHROM) &
+        (full["mid"] >= START) &
+        (full["mid"] <= END)
+    ].copy()
+
+    sub = sub.sort_values("mid")
+
+    ax.plot(
+        sub["mid"] / 1e6,
+        sub["value"],
+        linewidth=0.8
+    )
+
+    threshold = full["value"].quantile(threshold_q)
+    ax.axhline(threshold, linestyle="--", linewidth=0.45)
+
+    for name, pos in CANDIDATES.items():
+        ax.axvline(pos / 1e6, linestyle=":", linewidth=0.45)
+
+    if label == "XP-CLR":
+        ax.set_ylim(0, 31)
+
+        ymax = ax.get_ylim()[1]
+        for name, pos in CANDIDATES.items():
+            ax.text(
+                pos / 1e6,
+                ymax * 0.96,
+                name,
+                rotation=90,
+                ha="center",
+                va="top",
+                fontsize=3.8
+            )
+
+    elif label == r"$F_{ST}$":
+        ymax = max(full["value"].quantile(0.999), sub["value"].max()) * 1.05
+        ax.set_ylim(0, ymax)
+
+    else:
+        ymin = min(full["value"].quantile(0.001), sub["value"].min()) * 0.95
+        ymax = max(full["value"].quantile(0.999), sub["value"].max()) * 1.05
+        ax.set_ylim(ymin, ymax)
+
+    ax.set_ylabel(label, fontsize=5)
+    ax.tick_params(axis="both", labelsize=4, length=1.2, width=0.35)
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_linewidth(0.35)
+    ax.spines["bottom"].set_linewidth(0.35)
+
+axes[-1].set_xlim(2.20, 2.45)
+axes[-1].set_xticks([2.20, 2.25, 2.30, 2.35, 2.40, 2.45])
+axes[-1].set_xticklabels(["2.20", "2.25", "2.30", "2.35", "2.40", "2.45"])
+axes[-1].set_xlabel("Chr10 position (Mb)", fontsize=5)
+
+plt.savefig(OUT + ".png", dpi=600, bbox_inches="tight")
+plt.savefig(OUT + ".pdf", bbox_inches="tight")
+plt.close()
+
+print("Saved:", OUT + ".png")
+print("Saved:", OUT + ".pdf")
+EOF
+
+python plot_local_TIC_2.20_2.45Mb_adaptation_final.py
