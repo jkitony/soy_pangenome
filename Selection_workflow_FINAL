@@ -99,7 +99,7 @@ cat 05_annotation_sv/xpclr_SV_top1_summary.tsv
 
 ############################################################################################
 #ADD-ON
-#cd /data1/jkitony/soybean
+cd /data1/jkitony/soybean
 unzip selection_panel_addon_workflow.zip
 mv selection_panel_addon_workflow selection_panel_addon
 
@@ -117,7 +117,24 @@ cp ../selection_panel_addon/11_run_sv_fst_pi_all_comparisons.sh .
 cp ../selection_panel_addon/12_plot_stacked_selection_tracks.py .
 
 bash 11_run_sv_fst_pi_all_comparisons.sh
-python 12_plot_stacked_selection_tracks.py --variant SV --base .
+#python 12_plot_stacked_selection_tracks.py --variant SV --base .
+#############
+#updated 4.5
+cd /data1/jkitony/soybean/snp_selection_workflow
+
+cp ../selection_panel_addon/11_run_snp_fst_pi_all_comparisons.sh .
+
+bash 11_run_snp_fst_pi_all_comparisons.sh
+
+cd /data1/jkitony/soybean/snp_selection_workflow
+
+python ../selection_panel_addon/12_plot_stacked_selection_tracks.py \
+  --variant SNP \
+  --base . \
+  --scan domestication \
+  --width 4.5 \
+  --track_height 0.7
+#########
 
 #Make SNP–SV comparison plots:upset
 cd /data1/jkitony/soybean
@@ -303,3 +320,114 @@ mamba activate eggnog_env
 mamba activate goenv
 python 07_go_enrichment_snp_all_comparisons.py
 python 08_make_snp_function_table_all_comparisons.py
+
+###################################################
+#Gene model
+python plot_gene_structure.py \
+  --gff Wm82a5.gene_models_main.renamed.gff3 \
+  --gene Gmax_Wm82a5.Chr01.g025210 \
+  --out GI_Gmax_Wm82a5_Chr01_g025210_gene_structure
+###################################################
+cat > plot_gene_structure.py << 'EOF'
+#!/usr/bin/env python3
+
+import argparse
+import re
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--gff", required=True)
+parser.add_argument("--gene", required=True)
+parser.add_argument("--out", required=True)
+args = parser.parse_args()
+
+def attrs_to_dict(x):
+    d = {}
+    for item in str(x).split(";"):
+        if "=" in item:
+            k, v = item.split("=", 1)
+            d[k] = v
+    return d
+
+gff = pd.read_csv(
+    args.gff, sep="\t", comment="#", header=None,
+    names=["chr","source","type","start","end","score","strand","phase","attrs"]
+)
+
+gff["attr_dict"] = gff["attrs"].apply(attrs_to_dict)
+gff["ID"] = gff["attr_dict"].apply(lambda d: d.get("ID", ""))
+gff["Parent"] = gff["attr_dict"].apply(lambda d: d.get("Parent", ""))
+
+gene_row = gff[(gff["type"] == "gene") & (gff["ID"] == args.gene)]
+
+if gene_row.empty:
+    raise SystemExit(f"Gene not found: {args.gene}")
+
+gene_row = gene_row.iloc[0]
+chrom = gene_row["chr"]
+gstart = int(gene_row["start"])
+gend = int(gene_row["end"])
+strand = gene_row["strand"]
+
+# transcripts belonging to gene
+tx = gff[gff["Parent"] == args.gene].copy()
+
+if tx.empty:
+    raise SystemExit(f"No transcript found for gene: {args.gene}")
+
+tx_ids = set(tx["ID"])
+
+features = gff[gff["Parent"].isin(tx_ids)].copy()
+
+fig, ax = plt.subplots(figsize=(10, 2.5))
+
+y = 0.5
+
+# gene/intron baseline
+ax.plot([gstart, gend], [y, y], linewidth=1)
+
+# draw features
+for _, r in features.iterrows():
+    ftype = r["type"]
+    start = int(r["start"])
+    end = int(r["end"])
+    width = end - start + 1
+
+    if ftype in ["exon"]:
+        ax.add_patch(Rectangle((start, y - 0.08), width, 0.16, fill=False, linewidth=1))
+    elif ftype in ["CDS"]:
+        ax.add_patch(Rectangle((start, y - 0.16), width, 0.32))
+    elif ftype in ["five_prime_UTR", "three_prime_UTR", "UTR"]:
+        ax.add_patch(Rectangle((start, y - 0.10), width, 0.20, alpha=0.5))
+
+# direction arrow
+if strand == "+":
+    ax.annotate("", xy=(gend, y), xytext=(gend - (gend-gstart)*0.08, y),
+                arrowprops=dict(arrowstyle="->", lw=1))
+else:
+    ax.annotate("", xy=(gstart, y), xytext=(gstart + (gend-gstart)*0.08, y),
+                arrowprops=dict(arrowstyle="->", lw=1))
+
+ax.set_xlim(gstart - 1000, gend + 1000)
+ax.set_ylim(0, 1)
+ax.set_yticks([])
+ax.set_xlabel(f"{chrom} position")
+ax.set_title(f"{args.gene} gene structure ({strand} strand)")
+
+# legend
+ax.add_patch(Rectangle((0,0), 1, 1, label="CDS"))
+ax.add_patch(Rectangle((0,0), 1, 1, fill=False, label="Exon"))
+ax.legend(frameon=False, loc="upper right")
+
+plt.tight_layout()
+plt.savefig(args.out + ".png", dpi=300)
+plt.savefig(args.out + ".pdf")
+plt.close()
+
+print(f"Saved: {args.out}.png")
+print(f"Saved: {args.out}.pdf")
+EOF
+
+chmod +x plot_gene_structure.py
