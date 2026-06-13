@@ -298,3 +298,69 @@ plot_pca(
     order=["North_Early", "South_Late"],
     suffix="NorthEarly_vs_SouthLate"
 )
+
+##########################################
+#Dig deeper clustering observed
+
+import pandas as pd
+import os
+
+pca_table = "Adaptation_PCA_Plots/Adaptation_extreme_NorthEarly_vs_SouthLate_PCA_table.tsv"
+outdir = "Adaptation_PCA_PC1_groups"
+os.makedirs(outdir, exist_ok=True)
+
+df = pd.read_csv(pca_table, sep="\t")
+
+# Samples on positive PC1 side
+pc1_positive = df[df["PC1"] > 0].copy()
+
+# Samples on negative PC1 side
+pc1_negative = df[df["PC1"] < 0].copy()
+
+pc1_positive.to_csv(
+    f"{outdir}/PC1_positive_samples.tsv",
+    sep="\t",
+    index=False
+)
+
+pc1_negative.to_csv(
+    f"{outdir}/PC1_negative_samples.tsv",
+    sep="\t",
+    index=False
+)
+
+# Save only sample IDs, useful for later extraction
+pc1_positive[["FID", "IID"]].to_csv(
+    f"{outdir}/PC1_positive.keep",
+    sep="\t",
+    index=False,
+    header=False
+)
+
+pc1_negative[["FID", "IID"]].to_csv(
+    f"{outdir}/PC1_negative.keep",
+    sep="\t",
+    index=False,
+    header=False
+)
+
+print("PC1 positive samples:", len(pc1_positive))
+print("PC1 negative samples:", len(pc1_negative))
+
+print("\nPC1 positive adaptation groups:")
+print(pc1_positive["Adaptation_group"].value_counts())
+
+print("\nPC1 negative adaptation groups:")
+print(pc1_negative["Adaptation_group"].value_counts())
+
+print("\nPC1 positive maturity groups:")
+print(pc1_positive["Maturity_group"].value_counts().sort_index())
+
+print("\nPC1 negative maturity groups:")
+print(pc1_negative["Maturity_group"].value_counts().sort_index())
+
+print("\nPC1 positive countries:")
+print(pc1_positive["Country"].value_counts().head(20))
+
+print("\nPC1 negative countries:")
+print(pc1_negative["Country"].value_counts().head(20))
