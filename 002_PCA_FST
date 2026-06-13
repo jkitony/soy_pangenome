@@ -364,3 +364,96 @@ print(pc1_positive["Country"].value_counts().head(20))
 
 print("\nPC1 negative countries:")
 print(pc1_negative["Country"].value_counts().head(20))
+##################################################################################
+##################################################################################
+#FST
+bash run_north_south_fst.sh
+cat NorthEarly_vs_SouthLate_FST/NorthEarly_vs_SouthLate_FST_summary.tsv
+comparison      n_sites_used    mean_FST        median_FST
+North_Early_vs_South_Late       2385446 0.03605515637556296     0.0221025
+#0.036
+##################################################################################
+#!/bin/bash
+set -euo pipefail
+
+VCF="soy.snp.bi.filt.vcf.gz"
+META="Meta_FINAL.cleaned_for_PCA.csv"
+OUTDIR="NorthEarly_vs_SouthLate_FST"
+
+mkdir -p "${OUTDIR}"
+
+echo "Step 1: Create population files from metadata..."
+
+python <<'PY'
+import pandas as pd
+import os
+
+meta = pd.read_csv("Meta_FINAL.cleaned_for_PCA.csv")
+
+outdir = "NorthEarly_vs_SouthLate_FST"
+os.makedirs(outdir, exist_ok=True)
+
+north = meta[
+    (meta["Species"] == "G.max") &
+    (meta["Adaptation_group"] == "North_Early")
+]["Sample"].dropna().astype(str).drop_duplicates()
+
+south = meta[
+    (meta["Species"] == "G.max") &
+    (meta["Adaptation_group"] == "South_Late")
+]["Sample"].dropna().astype(str).drop_duplicates()
+
+north.to_csv(f"{outdir}/North_Early.samples.txt", index=False, header=False)
+south.to_csv(f"{outdir}/South_Late.samples.txt", index=False, header=False)
+
+print("North_Early samples:", len(north))
+print("South_Late samples:", len(south))
+PY
+
+echo "Step 2: Run vcftools Weir and Cockerham FST..."
+
+vcftools \
+  --gzvcf "${VCF}" \
+  --weir-fst-pop "${OUTDIR}/North_Early.samples.txt" \
+  --weir-fst-pop "${OUTDIR}/South_Late.samples.txt" \
+  --out "${OUTDIR}/NorthEarly_vs_SouthLate"
+
+echo "Step 3: Summarize genome-wide FST..."
+
+python <<'PY'
+import pandas as pd
+import numpy as np
+
+fst_file = "NorthEarly_vs_SouthLate_FST/NorthEarly_vs_SouthLate.weir.fst"
+
+fst = pd.read_csv(fst_file, sep="\t")
+
+# Remove undefined or negative FST if present
+fst = fst.replace([np.inf, -np.inf], np.nan)
+fst = fst.dropna(subset=["WEIR_AND_COCKERHAM_FST"])
+
+fst_clean = fst[fst["WEIR_AND_COCKERHAM_FST"] >= 0].copy()
+
+mean_fst = fst_clean["WEIR_AND_COCKERHAM_FST"].mean()
+median_fst = fst_clean["WEIR_AND_COCKERHAM_FST"].median()
+
+summary = pd.DataFrame({
+    "comparison": ["North_Early_vs_South_Late"],
+    "n_sites_used": [len(fst_clean)],
+    "mean_FST": [mean_fst],
+    "median_FST": [median_fst]
+})
+
+summary.to_csv(
+    "NorthEarly_vs_SouthLate_FST/NorthEarly_vs_SouthLate_FST_summary.tsv",
+    sep="\t",
+    index=False
+)
+
+print(summary)
+PY
+
+echo "Done."
+echo "Main output:"
+echo "${OUTDIR}/NorthEarly_vs_SouthLate.weir.fst"
+echo "${OUTDIR}/NorthEarly_vs_SouthLate_FST_summary.tsv"
