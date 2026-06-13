@@ -1,0 +1,769 @@
+#!/usr/bin/env python3
+
+import pandas as pd
+import re
+
+phenofile = "Phenotypes.csv"
+metafile = "Meta_FINAL.csv"
+
+# -----------------------------
+# Read CSVs with flexible encoding
+# -----------------------------
+def read_any_csv(fname):
+    for enc in ["utf-8", "utf-8-sig", "cp1252", "latin1"]:
+        try:
+            print(f"Reading {fname} with encoding: {enc}")
+            return pd.read_csv(fname, encoding=enc)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError(f"Could not read {fname}")
+
+pheno = read_any_csv(phenofile)
+meta = read_any_csv(metafile)
+
+# -----------------------------
+# Clean PI names for matching
+# -----------------------------
+def clean_pi(x):
+    if pd.isna(x):
+        return ""
+
+    x = str(x).strip()
+
+    # Convert underscores to spaces first
+    x = x.replace("__", " ")
+    x = x.replace("_", " ")
+
+    # Remove extra spaces
+    x = re.sub(r"\s+", " ", x)
+
+    # PI 548406 -> PI548406
+    x = re.sub(r"\bPI\s+", "PI", x)
+
+    # PI 549023 B -> PI549023B
+    x = re.sub(r"(PI\d+)\s+([A-Za-z])$", r"\1\2", x)
+
+    # PI 548402 -2 -> PI548402-2
+    x = re.sub(r"\s*-\s*", "-", x)
+
+    # Remove remaining spaces only for PI-style accessions
+    if x.startswith("PI"):
+        x = x.replace(" ", "")
+
+    return x
+
+pheno["PI_clean"] = pheno["PI"].apply(clean_pi)
+meta["PI_clean"] = meta["PI"].apply(clean_pi)
+
+# -----------------------------
+# Merge phenotype and metadata
+# -----------------------------
+meta_keep = [
+    "Sample",
+    "PI",
+    "PI_clean",
+    "Species",
+    "Germplasm_type",
+    "Country",
+    "Location",
+    "Maturity_group"
+]
+
+merged = pheno.merge(
+    meta[meta_keep],
+    on="PI_clean",
+    how="left",
+    suffixes=("_pheno", "_meta")
+)
+
+# -----------------------------
+# Save all merged rows
+# -----------------------------
+merged.to_csv("Phenotypes_with_Maturity_group.csv", index=False)
+
+# -----------------------------
+# Save unmatched rows
+# -----------------------------
+unmatched = merged[merged["Maturity_group"].isna()].copy()
+
+unmatched.to_csv(
+    "Phenotypes_not_found_in_Meta_FINAL.csv",
+    index=False
+)
+
+# -----------------------------
+# Save matched rows only
+# -----------------------------
+matched = merged[merged["Maturity_group"].notna()].copy()
+
+matched.to_csv(
+    "Phenotypes_with_Maturity_group_matched.csv",
+    index=False
+)
+
+# -----------------------------
+# Save matched rows with known MG only
+# -----------------------------
+matched_known = matched[matched["Maturity_group"] != "Unknown"].copy()
+
+matched_known.to_csv(
+    "Phenotypes_with_Maturity_group_matched_knownMG.csv",
+    index=False
+)
+
+# -----------------------------
+# Save clean plotting-ready file
+# -----------------------------
+clean_cols = [
+    "PI_pheno",
+    "PI_clean",
+    "Origin",
+    "Flowering_Date",
+    "Height",
+    "Maturity_Date",
+    "Sample",
+    "Species",
+    "Germplasm_type",
+    "Country",
+    "Location",
+    "Maturity_group"
+]
+
+# Keep only columns that exist
+clean_cols = [c for c in clean_cols if c in matched_known.columns]
+
+clean = matched_known[clean_cols].copy()
+
+clean.to_csv(
+    "Phenotypes_MG_clean.csv",
+    index=False
+)
+
+# -----------------------------
+# Save unmatched PI summary
+# -----------------------------
+unmatched_cols = [
+    "PI_pheno",
+    "PI_clean",
+    "Origin",
+    "Flowering_Date",
+    "Height",
+    "Maturity_Date"
+]
+
+unmatched_cols = [c for c in unmatched_cols if c in unmatched.columns]
+
+unmatched_summary = unmatched[unmatched_cols].drop_duplicates()
+
+unmatched_summary.to_csv(
+    "Unmatched_PI_summary_for_manual_cleaning.csv",
+    index=False
+)
+
+# -----------------------------
+# Print summary
+# -----------------------------
+print("\nMerge summary")
+print("-------------")
+print("Total phenotype rows:", len(pheno))
+print("Matched rows:", len(matched))
+print("Matched rows with known MG:", len(matched_known))
+print("Unmatched rows:", len(unmatched))
+
+print("\nFiles written:")
+print("1. Phenotypes_with_Maturity_group.csv")
+print("2. Phenotypes_with_Maturity_group_matched.csv")
+print("3. Phenotypes_with_Maturity_group_matched_knownMG.csv")
+print("4. Phenotypes_MG_clean.csv")
+print("5. Phenotypes_not_found_in_Meta_FINAL.csv")
+print("6. Unmatched_PI_summary_for_manual_cleaning.csv")
+
+print("\nUnmatched PI values:")
+print(unmatched_summary.head(50))
+
+##################################################################################
+##################################################################################
+#!/usr/bin/env python3
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import mannwhitneyu
+
+# -----------------------------
+# Input
+# -----------------------------
+infile = "Phenotypes_MG_clean.csv"
+df = pd.read_csv(infile)
+
+# -----------------------------
+# Clean semicolon-separated trait values
+# -----------------------------
+def clean_trait(x):
+    if pd.isna(x):
+        return np.nan
+
+    x = str(x).strip()
+
+    vals = []
+    for v in x.split(";"):
+        v = v.strip()
+
+        if v in ["", "0", "NA", "NaN", "nan", "None"]:
+            continue
+
+        try:
+            vals.append(float(v))
+        except ValueError:
+            continue
+
+    if len(vals) == 0:
+        return np.nan
+
+    return np.mean(vals)
+
+traits = ["Flowering_Date", "Height", "Maturity_Date"]
+
+for trait in traits:
+    df[trait] = df[trait].apply(clean_trait)
+
+# -----------------------------
+# Define two extreme adaptation groups
+# -----------------------------
+north_early = ["MG_000", "MG_00", "MG_0", "MG_I", "MG_II"]
+south_late = ["MG_V", "MG_VI", "MG_VII", "MG_VIII", "MG_IX"]
+
+def assign_adaptation_group(mg):
+    if mg in north_early:
+        return "North_Early"
+    elif mg in south_late:
+        return "South_Late"
+    else:
+        return np.nan
+
+df["Adaptation_group"] = df["Maturity_group"].apply(assign_adaptation_group)
+
+# Keep only North_Early and South_Late
+df = df.dropna(subset=["Adaptation_group"]).copy()
+
+# Save cleaned data used for plotting
+df.to_csv("Phenotypes_MG_clean_NorthEarly_SouthLate_for_boxplots.csv", index=False)
+
+# -----------------------------
+# Significance label
+# -----------------------------
+def significance_label(p):
+    if pd.isna(p):
+        return "n/a"
+    elif p < 0.001:
+        return "***"
+    elif p < 0.01:
+        return "**"
+    elif p < 0.05:
+        return "*"
+    else:
+        return "ns"
+
+# -----------------------------
+# Boxplot function
+# -----------------------------
+def plot_trait_boxplot(data, trait, ylabel=None, outprefix=None):
+    plot_df = data.dropna(subset=[trait, "Adaptation_group"]).copy()
+
+    order = ["North_Early", "South_Late"]
+    colors = ["green", "orange"]
+
+    north_vals = plot_df.loc[
+        plot_df["Adaptation_group"] == "North_Early", trait
+    ].dropna()
+
+    south_vals = plot_df.loc[
+        plot_df["Adaptation_group"] == "South_Late", trait
+    ].dropna()
+
+    if len(north_vals) < 2 or len(south_vals) < 2:
+        pval = np.nan
+        sig = "n/a"
+    else:
+        stat, pval = mannwhitneyu(
+            north_vals,
+            south_vals,
+            alternative="two-sided"
+        )
+        sig = significance_label(pval)
+
+    fig, ax = plt.subplots(figsize=(4.2, 4.8))
+
+    box_data = [north_vals, south_vals]
+
+    bp = ax.boxplot(
+        box_data,
+        tick_labels=order,
+        patch_artist=True,
+        widths=0.55,
+        showfliers=False
+    )
+
+    for patch, color in zip(bp["boxes"], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.75)
+
+    for median in bp["medians"]:
+        median.set_color("black")
+        median.set_linewidth(1.5)
+
+    # Add jittered points
+    np.random.seed(42)
+    for i, vals in enumerate(box_data, start=1):
+        x = np.random.normal(i, 0.04, size=len(vals))
+        ax.scatter(
+            x,
+            vals,
+            color="black",
+            alpha=0.55,
+            s=18,
+            zorder=3
+        )
+
+    # Significance bar
+    ymax = plot_df[trait].max()
+    ymin = plot_df[trait].min()
+    yrange = ymax - ymin
+
+    if yrange == 0:
+        yrange = ymax * 0.1 if ymax != 0 else 1
+
+    bar_y = ymax + 0.08 * yrange
+    text_y = ymax + 0.12 * yrange
+
+    ax.plot(
+        [1, 1, 2, 2],
+        [bar_y, bar_y + 0.03 * yrange, bar_y + 0.03 * yrange, bar_y],
+        color="black",
+        linewidth=1
+    )
+
+    ax.text(
+        1.5,
+        text_y,
+        sig,
+        ha="center",
+        va="bottom",
+        fontsize=13,
+        fontweight="bold"
+    )
+
+    if ylabel is None:
+        ylabel = trait.replace("_", " ")
+
+    ax.set_ylabel(ylabel, fontsize=12)
+    ax.set_xlabel("")
+    ax.set_title(f"{ylabel} by soybean adaptation group", fontsize=12)
+
+    ax.set_xticklabels(
+        ["North Early\nMG_000–MG_II", "South Late\nMG_V–MG_IX"],
+        fontsize=10
+    )
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    ax.text(
+        0.5,
+        -0.22,
+        f"North n={len(north_vals)}; South n={len(south_vals)}",
+        transform=ax.transAxes,
+        ha="center",
+        fontsize=9
+    )
+
+    ax.text(
+        0.5,
+        -0.28,
+        f"Mann–Whitney U p={pval:.3g}" if not np.isnan(pval) else "p=n/a",
+        transform=ax.transAxes,
+        ha="center",
+        fontsize=9
+    )
+
+    plt.tight_layout()
+
+    if outprefix is None:
+        outprefix = trait
+
+    png_file = f"{outprefix}_NorthEarly_vs_SouthLate_boxplot.png"
+    pdf_file = f"{outprefix}_NorthEarly_vs_SouthLate_boxplot.pdf"
+
+    plt.savefig(png_file, dpi=300, bbox_inches="tight")
+    plt.savefig(pdf_file, bbox_inches="tight")
+    plt.close()
+
+    # Print summary statistics
+    print("\n" + "=" * 70)
+    print(f"{trait}")
+    print("=" * 70)
+
+    print(f"Saved PNG: {png_file}")
+    print(f"Saved PDF: {pdf_file}")
+
+    print(f"\nNorth_Early n={len(north_vals)}")
+    print(north_vals.describe())
+
+    print(f"\nSouth_Late n={len(south_vals)}")
+    print(south_vals.describe())
+
+    print(f"\nMann–Whitney U p-value = {pval}")
+    print(f"Significance = {sig}")
+
+    return {
+        "Trait": trait,
+        "North_n": len(north_vals),
+        "South_n": len(south_vals),
+        "North_mean": north_vals.mean(),
+        "South_mean": south_vals.mean(),
+        "North_median": north_vals.median(),
+        "South_median": south_vals.median(),
+        "North_sd": north_vals.std(),
+        "South_sd": south_vals.std(),
+        "p_value": pval,
+        "significance": sig
+    }
+
+# -----------------------------
+# Make plots and collect stats
+# -----------------------------
+results = []
+
+results.append(
+    plot_trait_boxplot(
+        df,
+        "Flowering_Date",
+        ylabel="Flowering date",
+        outprefix="Flowering_Date"
+    )
+)
+
+results.append(
+    plot_trait_boxplot(
+        df,
+        "Height",
+        ylabel="Plant height",
+        outprefix="Height"
+    )
+)
+
+results.append(
+    plot_trait_boxplot(
+        df,
+        "Maturity_Date",
+        ylabel="Maturity date",
+        outprefix="Maturity_Date"
+    )
+)
+
+# -----------------------------
+# Save summary statistics table
+# -----------------------------
+summary = pd.DataFrame(results)
+
+summary.to_csv(
+    "NorthEarly_vs_SouthLate_trait_statistics.csv",
+    index=False
+)
+
+print("\n" + "=" * 70)
+print("Summary table")
+print("=" * 70)
+print(summary)
+
+print("\nSaved summary statistics:")
+print("NorthEarly_vs_SouthLate_trait_statistics.csv")
+
+print("\nSaved cleaned plotting data:")
+print("Phenotypes_MG_clean_NorthEarly_SouthLate_for_boxplots.csv")
+
+# ============================================================
+# Additional small publication-quality plots
+# Keeps the larger slide figures unchanged
+# Includes individual points behind boxplots
+# ============================================================
+
+def plot_small_publication_boxplot(data, trait, ylabel, outprefix):
+
+    plot_df = data.dropna(subset=[trait, "Adaptation_group"]).copy()
+
+    north_vals = plot_df.loc[
+        plot_df["Adaptation_group"] == "North_Early", trait
+    ].dropna()
+
+    south_vals = plot_df.loc[
+        plot_df["Adaptation_group"] == "South_Late", trait
+    ].dropna()
+
+    stat, pval = mannwhitneyu(
+        north_vals,
+        south_vals,
+        alternative="two-sided"
+    )
+
+    sig = significance_label(pval)
+
+    fig, ax = plt.subplots(figsize=(1.2, 1.2))
+
+    # Individual points first, behind boxes
+    np.random.seed(42)
+
+    for i, vals in enumerate([north_vals, south_vals], start=1):
+        x = np.random.normal(
+            loc=i,
+            scale=0.035,
+            size=len(vals)
+        )
+
+        ax.scatter(
+            x,
+            vals,
+            s=1.8,
+            color="black",
+            alpha=0.22,
+            linewidth=0,
+            zorder=1
+        )
+
+    # Boxplot on top of points
+    bp = ax.boxplot(
+        [north_vals, south_vals],
+        patch_artist=True,
+        widths=0.55,
+        showfliers=False,
+        zorder=2
+    )
+
+    bp["boxes"][0].set_facecolor("green")
+    bp["boxes"][1].set_facecolor("orange")
+
+    for box in bp["boxes"]:
+        box.set_alpha(0.75)
+        box.set_linewidth(0.7)
+        box.set_zorder(2)
+
+    for median in bp["medians"]:
+        median.set_color("black")
+        median.set_linewidth(0.8)
+        median.set_zorder(3)
+
+    for whisker in bp["whiskers"]:
+        whisker.set_linewidth(0.7)
+        whisker.set_zorder(2)
+
+    for cap in bp["caps"]:
+        cap.set_linewidth(0.7)
+        cap.set_zorder(2)
+
+    ymax = max(north_vals.max(), south_vals.max())
+    ymin = min(north_vals.min(), south_vals.min())
+    yrange = ymax - ymin
+
+    if yrange == 0:
+        yrange = 1
+
+    bar_y = ymax + 0.06 * yrange
+    bar_h = 0.03 * yrange
+
+    ax.plot(
+        [1, 1, 2, 2],
+        [bar_y, bar_y + bar_h, bar_y + bar_h, bar_y],
+        lw=0.7,
+        color="black"
+    )
+
+    ax.text(
+        1.5,
+        bar_y + bar_h,
+        sig,
+        ha="center",
+        va="bottom",
+        fontsize=7,
+        fontweight="bold"
+    )
+
+    ax.set_ylabel(ylabel, fontsize=6)
+    ax.set_xlabel("")
+
+    ax.set_xticks([1, 2])
+    ax.set_xticklabels(
+        ["MG000–II", "MGV–IX"],
+        fontsize=5.5
+    )
+
+    ax.tick_params(axis="y", labelsize=6, length=2, width=0.6)
+    ax.tick_params(axis="x", length=2, width=0.6)
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_linewidth(0.6)
+    ax.spines["bottom"].set_linewidth(0.6)
+
+    ax.set_ylim(ymin - 0.04 * yrange, ymax + 0.18 * yrange)
+
+    plt.tight_layout(pad=0.15)
+
+    png_file = f"{outprefix}_small_publication.png"
+    pdf_file = f"{outprefix}_small_publication.pdf"
+
+    plt.savefig(
+        png_file,
+        dpi=600,
+        bbox_inches="tight",
+        transparent=True
+    )
+
+    plt.savefig(
+        pdf_file,
+        bbox_inches="tight",
+        transparent=True
+    )
+
+    plt.close()
+
+    print(f"Saved: {png_file}")
+    print(f"Saved: {pdf_file}")
+    print(f"{trait}: North n={len(north_vals)}, South n={len(south_vals)}, p={pval:.3e}, sig={sig}")
+
+
+# Generate only small publication panels for Fig. 8f,g
+plot_small_publication_boxplot(
+    df,
+    "Height",
+    ylabel="Height (cm)",
+    outprefix="Fig8f_Height"
+)
+
+plot_small_publication_boxplot(
+    df,
+    "Maturity_Date",
+    ylabel="Maturity date",
+    outprefix="Fig8g_MaturityDate"
+)
+##################################################################################
+##################################################################################
+#!/usr/bin/env python3
+
+import pandas as pd
+import re
+
+meta_file = "Meta_FINAL.csv"
+
+def read_any_csv(fname):
+    for enc in ["utf-8", "utf-8-sig", "cp1252", "latin1"]:
+        try:
+            return pd.read_csv(fname, encoding=enc)
+        except UnicodeDecodeError:
+            pass
+    raise ValueError(f"Could not read {fname}")
+
+def clean_text(x):
+    if pd.isna(x):
+        return pd.NA
+    x = str(x).strip()
+    if x in ["", "NA", "N/A", "nan", "None", "<NA>", "Unknown", "unknown"]:
+        return pd.NA
+    return x
+
+def normalize_mg(x):
+    if pd.isna(x):
+        return pd.NA
+
+    x = str(x).strip()
+    x = re.sub(r"\s+", "", x)
+
+    fixes = {
+        "000": "MG_000",
+        "00": "MG_00",
+        "0": "MG_0",
+        "I": "MG_I",
+        "II": "MG_II",
+        "III": "MG_III",
+        "IV": "MG_IV",
+        "V": "MG_V",
+        "VI": "MG_VI",
+        "VII": "MG_VII",
+        "VIII": "MG_VIII",
+        "IX": "MG_IX",
+    }
+
+    if x in fixes:
+        return fixes[x]
+
+    valid = [
+        "MG_000", "MG_00", "MG_0", "MG_I", "MG_II",
+        "MG_III", "MG_IV", "MG_V", "MG_VI",
+        "MG_VII", "MG_VIII", "MG_IX"
+    ]
+
+    return x if x in valid else pd.NA
+
+def assign_adaptation_group(mg):
+    if pd.isna(mg):
+        return pd.NA
+
+    north = ["MG_000", "MG_00", "MG_0", "MG_I", "MG_II"]
+    central = ["MG_III", "MG_IV"]
+    south = ["MG_V", "MG_VI", "MG_VII", "MG_VIII", "MG_IX"]
+
+    if mg in north:
+        return "North_Early"
+    elif mg in central:
+        return "Central_Mid"
+    elif mg in south:
+        return "South_Late"
+    else:
+        return pd.NA
+
+def write_keep(df, outfile):
+    with open(outfile, "w") as f:
+        for s in df["Sample"].dropna().astype(str).unique():
+            f.write(f"{s}\t{s}\n")
+
+meta = read_any_csv(meta_file)
+meta.columns = meta.columns.str.strip()
+
+required = ["Sample", "Species", "Germplasm_type", "Maturity_group"]
+for col in required:
+    if col not in meta.columns:
+        raise ValueError(f"Missing column: {col}")
+
+for col in required:
+    meta[col] = meta[col].apply(clean_text)
+
+meta["Maturity_group"] = meta["Maturity_group"].apply(normalize_mg)
+meta["Adaptation_group"] = meta["Maturity_group"].apply(assign_adaptation_group)
+
+meta = meta.drop_duplicates(subset=["Sample"]).copy()
+
+# Adaptation PCA: only G.max with known maturity group
+adapt = meta[
+    (meta["Species"] == "G.max") &
+    (meta["Maturity_group"].notna()) &
+    (meta["Adaptation_group"].notna())
+].copy()
+
+# Extreme-only adaptation PCA: North_Early vs South_Late
+adapt_extreme = adapt[
+    adapt["Adaptation_group"].isin(["North_Early", "South_Late"])
+].copy()
+
+write_keep(adapt, "Adaptation_allMG.keep")
+write_keep(adapt_extreme, "Adaptation_extreme.keep")
+
+meta.to_csv("Meta_FINAL.cleaned_for_PCA.csv", index=False)
+
+print("Done preparing PCA groups.")
+print("\nAll adaptation MG samples:")
+print(adapt["Maturity_group"].value_counts().sort_index())
+
+print("\nAdaptation groups:")
+print(adapt["Adaptation_group"].value_counts())
+
+print("\nExtreme groups only:")
+print(adapt_extreme["Adaptation_group"].value_counts())
