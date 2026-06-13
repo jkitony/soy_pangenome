@@ -1,0 +1,300 @@
+#python prepare_soybean_pca_groups.py
+/data1/jkitony/soybean/FINAL/PCAs/
+#########################################
+#!/usr/bin/env python3
+
+import pandas as pd
+import re
+
+meta_file = "Meta_FINAL.csv"
+
+def read_any_csv(fname):
+    for enc in ["utf-8", "utf-8-sig", "cp1252", "latin1"]:
+        try:
+            return pd.read_csv(fname, encoding=enc)
+        except UnicodeDecodeError:
+            pass
+    raise ValueError(f"Could not read {fname}")
+
+def clean_text(x):
+    if pd.isna(x):
+        return pd.NA
+    x = str(x).strip()
+    if x in ["", "NA", "N/A", "nan", "None", "<NA>", "Unknown", "unknown"]:
+        return pd.NA
+    return x
+
+def normalize_mg(x):
+    if pd.isna(x):
+        return pd.NA
+
+    x = str(x).strip()
+    x = re.sub(r"\s+", "", x)
+
+    fixes = {
+        "000": "MG_000",
+        "00": "MG_00",
+        "0": "MG_0",
+        "I": "MG_I",
+        "II": "MG_II",
+        "III": "MG_III",
+        "IV": "MG_IV",
+        "V": "MG_V",
+        "VI": "MG_VI",
+        "VII": "MG_VII",
+        "VIII": "MG_VIII",
+        "IX": "MG_IX",
+    }
+
+    if x in fixes:
+        return fixes[x]
+
+    valid = [
+        "MG_000", "MG_00", "MG_0", "MG_I", "MG_II",
+        "MG_III", "MG_IV", "MG_V", "MG_VI",
+        "MG_VII", "MG_VIII", "MG_IX"
+    ]
+
+    return x if x in valid else pd.NA
+
+def assign_adaptation_group(mg):
+    if pd.isna(mg):
+        return pd.NA
+
+    north = ["MG_000", "MG_00", "MG_0", "MG_I", "MG_II"]
+    central = ["MG_III", "MG_IV"]
+    south = ["MG_V", "MG_VI", "MG_VII", "MG_VIII", "MG_IX"]
+
+    if mg in north:
+        return "North_Early"
+    elif mg in central:
+        return "Central_Mid"
+    elif mg in south:
+        return "South_Late"
+    else:
+        return pd.NA
+
+def write_keep(df, outfile):
+    with open(outfile, "w") as f:
+        for s in df["Sample"].dropna().astype(str).unique():
+            f.write(f"{s}\t{s}\n")
+
+meta = read_any_csv(meta_file)
+meta.columns = meta.columns.str.strip()
+
+required = ["Sample", "Species", "Germplasm_type", "Maturity_group"]
+for col in required:
+    if col not in meta.columns:
+        raise ValueError(f"Missing column: {col}")
+
+for col in required:
+    meta[col] = meta[col].apply(clean_text)
+
+meta["Maturity_group"] = meta["Maturity_group"].apply(normalize_mg)
+meta["Adaptation_group"] = meta["Maturity_group"].apply(assign_adaptation_group)
+
+meta = meta.drop_duplicates(subset=["Sample"]).copy()
+
+# Adaptation PCA: only G.max with known maturity group
+adapt = meta[
+    (meta["Species"] == "G.max") &
+    (meta["Maturity_group"].notna()) &
+    (meta["Adaptation_group"].notna())
+].copy()
+
+# Extreme-only adaptation PCA: North_Early vs South_Late
+adapt_extreme = adapt[
+    adapt["Adaptation_group"].isin(["North_Early", "South_Late"])
+].copy()
+
+write_keep(adapt, "Adaptation_allMG.keep")
+write_keep(adapt_extreme, "Adaptation_extreme.keep")
+
+meta.to_csv("Meta_FINAL.cleaned_for_PCA.csv", index=False)
+
+print("Done preparing PCA groups.")
+print("\nAll adaptation MG samples:")
+print(adapt["Maturity_group"].value_counts().sort_index())
+
+print("\nAdaptation groups:")
+print(adapt["Adaptation_group"].value_counts())
+
+print("\nExtreme groups only:")
+print(adapt_extreme["Adaptation_group"].value_counts())
+#####################################################################
+#####################################################################
+bash run_adaptation_pca.sh
+#####################################################################
+#!/bin/bash
+set -euo pipefail
+
+VCF="soy.snp.bi.filt.vcf.gz"
+OUTDIR="Adaptation_PCA"
+
+mkdir -p "${OUTDIR}"
+
+run_pca () {
+    NAME=$1
+    KEEP=$2
+
+    echo "Running PCA for ${NAME}"
+
+    plink --vcf "${VCF}" \
+        --allow-extra-chr \
+        --double-id \
+        --keep "${KEEP}" \
+        --make-bed \
+        --out "${OUTDIR}/${NAME}"
+
+    plink --bfile "${OUTDIR}/${NAME}" \
+        --indep-pairwise 50 5 0.2 \
+        --out "${OUTDIR}/${NAME}"
+
+    plink --bfile "${OUTDIR}/${NAME}" \
+        --extract "${OUTDIR}/${NAME}.prune.in" \
+        --pca 10 \
+        --out "${OUTDIR}/${NAME}"
+}
+
+run_pca "Adaptation_allMG" "Adaptation_allMG.keep"
+run_pca "Adaptation_extreme" "Adaptation_extreme.keep"
+
+echo "Done."
+####################################################################
+####################################################################
+python plot_adaptation_pca.py
+#####################################################################
+#!/usr/bin/env python3
+
+import os
+import pandas as pd
+import matplotlib.pyplot as plt
+
+META_FILE = "Meta_FINAL.cleaned_for_PCA.csv"
+PCA_DIR = "Adaptation_PCA"
+OUTDIR = "Adaptation_PCA_Plots"
+
+os.makedirs(OUTDIR, exist_ok=True)
+
+DPI = 600
+
+GROUP_COLORS = {
+    "North_Early": "green",
+    "Central_Mid": "gray",
+    "South_Late": "orange",
+}
+
+MG_COLORS = {
+    "MG_000": "#c7e9c0",
+    "MG_00": "#a1d99b",
+    "MG_0": "#74c476",
+    "MG_I": "#31a354",
+    "MG_II": "#006d2c",
+    "MG_III": "#bdbdbd",
+    "MG_IV": "#737373",
+    "MG_V": "#fdd0a2",
+    "MG_VI": "#fdae6b",
+    "MG_VII": "#fd8d3c",
+    "MG_VIII": "#e6550d",
+    "MG_IX": "#a63603",
+}
+
+def load_eigenvec(path):
+    df = pd.read_csv(path, sep=r"\s+", header=None)
+    ncols = df.shape[1]
+    df.columns = ["FID", "IID"] + [f"PC{i}" for i in range(1, ncols - 1)]
+    return df
+
+def load_eigenval(path):
+    vals = pd.read_csv(path, header=None)[0].tolist()
+    total = sum(vals)
+    return [100 * v / total for v in vals]
+
+def plot_pca(pca_name, color_col, palette, order, suffix):
+    eigenvec = os.path.join(PCA_DIR, f"{pca_name}.eigenvec")
+    eigenval = os.path.join(PCA_DIR, f"{pca_name}.eigenval")
+
+    pca = load_eigenvec(eigenvec)
+    pvar = load_eigenval(eigenval)
+
+    meta = pd.read_csv(META_FILE)
+    merged = pca.merge(meta, left_on="IID", right_on="Sample", how="left")
+
+    merged.to_csv(
+        os.path.join(OUTDIR, f"{pca_name}_{suffix}_PCA_table.tsv"),
+        sep="\t",
+        index=False
+    )
+
+    fig, ax = plt.subplots(figsize=(3.2, 3.2))
+
+    for grp in order:
+        sub = merged[merged[color_col] == grp]
+        if len(sub) == 0:
+            continue
+
+        ax.scatter(
+            sub["PC1"],
+            sub["PC2"],
+            s=18,
+            alpha=0.85,
+            color=palette.get(grp, "gray"),
+            edgecolor="black",
+            linewidth=0.25,
+            label=f"{grp} (n={len(sub)})"
+        )
+
+    ax.set_xlabel(f"PC1 ({pvar[0]:.2f}%)")
+    ax.set_ylabel(f"PC2 ({pvar[1]:.2f}%)")
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    ax.legend(frameon=False, fontsize=6, loc="best")
+
+    plt.tight_layout()
+
+    png = os.path.join(OUTDIR, f"{pca_name}_{suffix}_PC1_PC2.png")
+    pdf = os.path.join(OUTDIR, f"{pca_name}_{suffix}_PC1_PC2.pdf")
+
+    plt.savefig(png, dpi=DPI, bbox_inches="tight")
+    plt.savefig(pdf, bbox_inches="tight")
+    plt.close()
+
+    print(f"Saved: {png}")
+    print(f"Saved: {pdf}")
+
+    print(f"\n{pca_name} - {color_col}")
+    print(merged[color_col].value_counts(dropna=False))
+
+
+# Plot all MGs colored by adaptation group
+plot_pca(
+    pca_name="Adaptation_allMG",
+    color_col="Adaptation_group",
+    palette=GROUP_COLORS,
+    order=["North_Early", "Central_Mid", "South_Late"],
+    suffix="by_AdaptationGroup"
+)
+
+# Plot all MGs colored by maturity group
+plot_pca(
+    pca_name="Adaptation_allMG",
+    color_col="Maturity_group",
+    palette=MG_COLORS,
+    order=[
+        "MG_000", "MG_00", "MG_0", "MG_I", "MG_II",
+        "MG_III", "MG_IV",
+        "MG_V", "MG_VI", "MG_VII", "MG_VIII", "MG_IX"
+    ],
+    suffix="by_MaturityGroup"
+)
+
+# Plot only North_Early vs South_Late
+plot_pca(
+    pca_name="Adaptation_extreme",
+    color_col="Adaptation_group",
+    palette=GROUP_COLORS,
+    order=["North_Early", "South_Late"],
+    suffix="NorthEarly_vs_SouthLate"
+)
