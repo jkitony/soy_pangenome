@@ -457,3 +457,43 @@ echo "Done."
 echo "Main output:"
 echo "${OUTDIR}/NorthEarly_vs_SouthLate.weir.fst"
 echo "${OUTDIR}/NorthEarly_vs_SouthLate_FST_summary.tsv"
+
+#############################################################
+#Now test whether the PCA axis itself is associated with maturity adaptation.
+echo "Step 4: Test whether PC1 differs between North_Early and South_Late..."
+
+python <<'PY'
+import pandas as pd
+from scipy.stats import mannwhitneyu
+
+pca_file = "Adaptation_PCA_Plots/Adaptation_extreme_NorthEarly_vs_SouthLate_PCA_table.tsv"
+
+df = pd.read_csv(pca_file, sep="\t")
+
+north = df[df["Adaptation_group"] == "North_Early"]["PC1"].dropna()
+south = df[df["Adaptation_group"] == "South_Late"]["PC1"].dropna()
+
+stat, p = mannwhitneyu(
+    north,
+    south,
+    alternative="two-sided"
+)
+
+summary = pd.DataFrame({
+    "comparison": ["North_Early_vs_South_Late_PC1"],
+    "North_n": [len(north)],
+    "South_n": [len(south)],
+    "North_mean_PC1": [north.mean()],
+    "South_mean_PC1": [south.mean()],
+    "North_median_PC1": [north.median()],
+    "South_median_PC1": [south.median()],
+    "MannWhitney_U": [stat],
+    "p_value": [p]
+})
+
+out = "NorthEarly_vs_SouthLate_FST/NorthEarly_vs_SouthLate_PC1_test.tsv"
+summary.to_csv(out, sep="\t", index=False)
+
+print(summary)
+print(f"\nSaved: {out}")
+PY
