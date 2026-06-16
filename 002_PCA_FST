@@ -497,3 +497,911 @@ summary.to_csv(out, sep="\t", index=False)
 print(summary)
 print(f"\nSaved: {out}")
 PY
+
+######################################################################################################################################
+######################################################################################################################################
+#FST on E and J genes
+/data1/jkitony/soybean/FINAL/PCAs
+python extract_maturity_gene_candidates_from_background.py
+column -t candidate_maturity_genes_coordinates.tsv | less -S
+
+######################################################################################################################################
+######################################################################################################################################
+#!/usr/bin/env python3
+
+import pandas as pd
+import re
+
+ann = "/data1/jkitony/soybean/snp_selection_workflow/06_eggnog/background/Wm82a5_background.emapper.annotations"
+gff = "Wm82a5.gene_models_main.renamed.gff3"
+
+out_hits = "maturity_gene_candidates_from_background_eggnog.tsv"
+out_coord = "candidate_maturity_genes_coordinates.tsv"
+
+# -------------------------
+# Read eggNOG annotation
+# -------------------------
+df = pd.read_csv(
+    ann,
+    sep="\t",
+    comment="#",
+    header=None,
+    dtype=str
+).fillna("")
+
+cols = [
+    "query", "seed_ortholog", "evalue", "score", "eggNOG_OGs",
+    "max_annot_lvl", "COG_category", "Description", "Preferred_name",
+    "GOs", "EC", "KEGG_ko", "KEGG_Pathway", "KEGG_Module",
+    "KEGG_Reaction", "KEGG_rclass", "BRITE", "KEGG_TC",
+    "CAZy", "BiGG_Reaction", "PFAMs"
+]
+
+df = df.iloc[:, :len(cols)]
+df.columns = cols
+
+df["gene_id"] = df["query"].str.replace(r"\.1$", "", regex=True)
+df["search"] = df.astype(str).agg(" ".join, axis=1)
+
+# -------------------------
+# Candidate matching rules
+# -------------------------
+rules = {
+    "E1_like_B3_Chr06": {
+        "chr": "Chr06",
+        "patterns": ["B3", "AP2 ERF and B3", "B3 domain"]
+    },
+    "E2_GIGANTEA_Chr10": {
+        "chr": "Chr10",
+        "patterns": ["GIGANTEA", "GI"]
+    },
+    "E3_PHYA_Chr19": {
+        "chr": "Chr19",
+        "patterns": ["PHYA", "phytochrome"]
+    },
+    "E4_PHYA_Chr20": {
+        "chr": "Chr20",
+        "patterns": ["PHYA", "phytochrome"]
+    },
+    "J_ELF3_Chr04": {
+        "chr": "Chr04",
+        "patterns": ["ELF3", "EARLY FLOWERING"]
+    },
+    "Tof11_PRR_Chr11": {
+        "chr": "Chr11",
+        "patterns": ["PRR", "pseudo-response", "response regulator", "APRR"]
+    },
+    "Tof12_PRR_Chr12": {
+        "chr": "Chr12",
+        "patterns": ["PRR", "pseudo-response", "response regulator", "APRR"]
+    },
+}
+
+hits = []
+
+for label, cfg in rules.items():
+    chrom = cfg["chr"]
+    pattern = "|".join([re.escape(p) for p in cfg["patterns"]])
+
+    sub = df[
+        df["gene_id"].str.contains(chrom, na=False) &
+        df["search"].str.contains(pattern, case=False, na=False)
+    ].copy()
+
+    sub["candidate_label"] = label
+    sub["expected_chr"] = chrom
+
+    hits.append(sub)
+
+hits = pd.concat(hits, ignore_index=True)
+hits.to_csv(out_hits, sep="\t", index=False)
+
+print("Candidate hits by rule:")
+print(hits["candidate_label"].value_counts())
+
+# -------------------------
+# Read GFF coordinates
+# -------------------------
+gff_records = []
+
+with open(gff) as f:
+    for line in f:
+        if line.startswith("#"):
+            continue
+
+        parts = line.rstrip().split("\t")
+        if len(parts) < 9:
+            continue
+
+        chrom, source, feature, start, end, score, strand, phase, attrs = parts
+
+        if feature != "gene":
+            continue
+
+        m = re.search(r"ID=([^;]+)", attrs)
+        if not m:
+            continue
+
+        gene_id = m.group(1)
+
+        gff_records.append({
+            "gene_id": gene_id,
+            "chr": chrom,
+            "start": int(start),
+            "end": int(end),
+            "strand": strand
+        })
+
+gff_df = pd.DataFrame(gff_records)
+
+# -------------------------
+# Merge coordinates
+# -------------------------
+hits_coord = hits.merge(
+    gff_df,
+    on="gene_id",
+    how="left"
+)
+
+# Keep clean coordinate table
+coord = hits_coord[
+    [
+        "candidate_label",
+        "gene_id",
+        "chr",
+        "start",
+        "end",
+        "strand",
+        "Preferred_name",
+        "Description",
+        "PFAMs",
+        "seed_ortholog",
+        "evalue",
+        "score"
+    ]
+].copy()
+
+coord.to_csv(out_coord, sep="\t", index=False)
+
+print("\nSaved:")
+print(out_hits)
+print(out_coord)
+
+print("\nTop candidates:")
+print(coord.sort_values(["candidate_label", "evalue"]).head(50))
+
+######################################################################################################################################
+#create 100 kb windows and summarize:
+awk 'BEGIN{OFS="\t"} !/^CHROM/ {
+    start=int($2/100000)*100000
+    end=start+100000
+    print $1,start,end,$3
+}' NorthEarly_vs_SouthLate_FST/NorthEarly_vs_SouthLate.weir.fst \
+> fst_100kb_input.tsv
+
+bedtools groupby \
+    -i <(sort -k1,1 -k2,2n fst_100kb_input.tsv) \
+    -g 1,2,3 \
+    -c 4 \
+    -o mean \
+> NorthEarly_vs_SouthLate_100kb_meanFST.bed
+
+#Step 3: Overlap genes with high-FST windows
+
+#candidate_adaptation_genes.bed
+Chr19   50826831   50838194   E3
+Chr20   36377838   36383166   E4
+Chr04   4087468    4091664    J
+################################################
+#Step 3: Overlap genes with high-FST windows
+#python highFST_windows.py
+##########################################
+#!/usr/bin/env python3
+
+import pandas as pd
+import numpy as np
+
+infile = "NorthEarly_vs_SouthLate_100kb_meanFST.bed"
+outfile = "NorthEarly_vs_SouthLate_top1pct_FST.bed"
+
+# Read flexibly
+fst = pd.read_csv(
+    infile,
+    sep=r"\s+",
+    header=None,
+    names=["chr", "start", "end", "fst"],
+    comment="#",
+    dtype=str
+)
+
+# Remove accidental header rows
+fst = fst[fst["chr"] != "chr"]
+fst = fst[fst["start"] != "start"]
+fst = fst[fst["fst"] != "fst"]
+
+# Convert numeric columns
+fst["start"] = pd.to_numeric(fst["start"], errors="coerce")
+fst["end"] = pd.to_numeric(fst["end"], errors="coerce")
+fst["fst"] = pd.to_numeric(fst["fst"], errors="coerce")
+
+# Remove bad rows
+fst = fst.dropna(subset=["chr", "start", "end", "fst"]).copy()
+
+# Remove negative FST if any
+fst = fst[fst["fst"] >= 0].copy()
+
+fst["start"] = fst["start"].astype(int)
+fst["end"] = fst["end"].astype(int)
+
+print("Rows after cleaning:", len(fst))
+print("FST min:", fst["fst"].min())
+print("FST median:", fst["fst"].median())
+print("FST max:", fst["fst"].max())
+
+thr = fst["fst"].quantile(0.99)
+
+top = fst[fst["fst"] >= thr].copy()
+
+top.to_csv(
+    outfile,
+    sep="\t",
+    header=False,
+    index=False
+)
+
+print("Top 1% threshold:", thr)
+print("Top windows:", len(top))
+print("Saved:", outfile)
+
+################################
+#Intesect
+##################################
+bedtools intersect \
+  -wa -wb \
+  -a candidate_adaptation_genes.bed \
+  -b NorthEarly_vs_SouthLate_top1pct_FST.bed \
+  > candidate_gene_FST_overlap.tsv
+ cat candidate_gene_1Mbflank_top5pct_FST_overlap.tsv
+###########################################
+#python plot_J_FST.py
+###########################################
+import pandas as pd
+import matplotlib.pyplot as plt
+
+fst = pd.read_csv(
+    "NorthEarly_vs_SouthLate_100kb_meanFST.bed",
+    sep="\t",
+    header=None,
+    names=["chr","start","end","fst"]
+)
+
+fst["fst"] = pd.to_numeric(fst["fst"], errors="coerce")
+fst = fst.dropna()
+
+j_start = 4087468
+j_end = 4091664
+
+region = fst[
+    (fst["chr"] == "Chr04") &
+    (fst["start"] >= 2_000_000) &
+    (fst["end"] <= 6_000_000)
+].copy()
+
+fig, ax = plt.subplots(figsize=(3.5, 2))
+
+ax.plot(
+    region["start"],
+    region["fst"],
+    color="black",
+    linewidth=0.8
+)
+
+ax.scatter(
+    region["start"],
+    region["fst"],
+    s=10,
+    color="black"
+)
+
+ax.axvspan(
+    j_start,
+    j_end,
+    color="red",
+    alpha=0.3,
+    label="J (ELF3)"
+)
+
+ax.axhline(
+    0.036,
+    color="grey",
+    linestyle="--",
+    linewidth=0.8,
+    label="Genome mean FST"
+)
+
+ax.set_xlabel("Chr04 position (Mb)")
+ax.set_ylabel("Mean FST")
+
+ax.set_xticklabels(
+    [f"{x/1e6:.1f}" for x in ax.get_xticks()]
+)
+
+ax.legend(frameon=False, fontsize=7)
+
+ax.spines["top"].set_visible(False)
+ax.spines["right"].set_visible(False)
+
+plt.tight_layout()
+
+plt.savefig("J_local_FST.png", dpi=600)
+plt.savefig("J_local_FST.pdf")
+
+plt.close()
+
+################################
+#Chr10 focus
+###############################
+rm -f chr10_adaptation_candidates.bed
+
+printf "Chr10\t49142355\t49162347\tE2_GI\n"   >> chr10_adaptation_candidates.bed
+printf "Chr10\t41383186\t41388798\tPHYA\n"    >> chr10_adaptation_candidates.bed
+printf "Chr10\t45287661\t45292040\tCRY2\n"    >> chr10_adaptation_candidates.bed
+printf "Chr10\t43094628\t43096444\tGID1a\n"   >> chr10_adaptation_candidates.bed
+printf "Chr10\t35678293\t35680209\tGA2ox3\n"  >> chr10_adaptation_candidates.bed
+printf "Chr10\t41105166\t41106331\tIAA20\n"   >> chr10_adaptation_candidates.bed
+printf "Chr10\t53121559\t53122797\tIAA32\n"   >> chr10_adaptation_candidates.bed
+
+#Flanking
+awk 'BEGIN{OFS="\t"}{
+    s=$2-1000000; if(s<0)s=0;
+    e=$3+1000000;
+    print $1,s,e,$4
+}' chr10_adaptation_candidates.bed \
+> chr10_adaptation_candidates_1Mb.bed
+
+bedtools intersect \
+    -wa -wb \
+    -a chr10_adaptation_candidates_1Mb.bed \
+    -b NorthEarly_vs_SouthLate_top5pct_FST.bed \
+> chr10_candidate_top5pct_overlap.tsv
+
+column -t chr10_candidate_top5pct_overlap.tsv
+
+##################
+nano plot_chr10_adaptation_fst.py
+#######################################
+#!/usr/bin/env python3
+
+import pandas as pd
+import matplotlib.pyplot as plt
+
+fst_file = "NorthEarly_vs_SouthLate_100kb_meanFST.bed"
+genome_mean_fst = 0.036055
+
+fst = pd.read_csv(
+    fst_file,
+    sep=r"\s+",
+    header=None,
+    names=["chr", "start", "end", "fst"]
+)
+
+fst["fst"] = pd.to_numeric(fst["fst"], errors="coerce")
+fst = fst.dropna(subset=["fst"])
+
+chr10 = fst[fst["chr"] == "Chr10"].copy()
+chr10["mid_mb"] = (chr10["start"] + chr10["end"]) / 2 / 1e6
+
+genes = [
+    ("PHYA", 41383186, 41388798),
+    ("IAA20", 41105166, 41106331),
+    ("GID1a", 43094628, 43096444),
+    ("CRY2", 45287661, 45292040),
+    ("E2/GI", 49142355, 49162347),
+    ("IAA32", 53121559, 53122797),
+]
+
+fig, ax = plt.subplots(figsize=(6.2, 3.0))
+
+ax.plot(
+    chr10["mid_mb"],
+    chr10["fst"],
+    color="black",
+    linewidth=0.8,
+    zorder=1
+)
+
+ax.scatter(
+    chr10["mid_mb"],
+    chr10["fst"],
+    s=8,
+    color="black",
+    zorder=2
+)
+
+ymax = chr10["fst"].max()
+ylim_top = ymax * 1.55
+label_base_y = ymax * 1.18
+
+# Stagger labels to avoid overlap
+label_offsets = {
+    "PHYA": -0.70,
+    "IAA20": 0.70,
+    "GID1a": 0.00,
+    "CRY2": 0.00,
+    "E2/GI": 0.00,
+    "IAA32": 0.00,
+}
+
+# Optional vertical staggering
+label_y_offsets = {
+    "PHYA": 0.00,
+    "IAA20": 0.12,
+    "GID1a": 0.24,
+    "CRY2": 0.00,
+    "E2/GI": 0.12,
+    "IAA32": 0.00,
+}
+
+for name, start, end in genes:
+
+    start_mb = start / 1e6
+    end_mb = end / 1e6
+    mid_mb = (start + end) / 2 / 1e6
+
+    ax.axvspan(
+        start_mb,
+        end_mb,
+        color="red",
+        alpha=0.22,
+        zorder=0
+    )
+
+    # Arrow target at gene midpoint
+    target_y = genome_mean_fst
+
+    # Label position, shifted sideways and upward
+    text_x = mid_mb + label_offsets.get(name, 0)
+    text_y = label_base_y + ymax * label_y_offsets.get(name, 0)
+
+    ax.annotate(
+        name,
+        xy=(mid_mb, target_y),
+        xytext=(text_x, text_y),
+        textcoords="data",
+        ha="center",
+        va="bottom",
+        fontsize=6,
+        rotation=90,
+        arrowprops=dict(
+            arrowstyle="-",
+            color="red",
+            lw=0.5,
+            shrinkA=0,
+            shrinkB=0
+        )
+    )
+
+ax.axhline(
+    genome_mean_fst,
+    color="gray",
+    linestyle="--",
+    linewidth=0.8,
+    label=f"Genome mean FST = {genome_mean_fst:.3f}"
+)
+
+ax.set_ylim(0, ylim_top)
+
+ax.set_xlabel("Chr10 position (Mb)", fontsize=8)
+ax.set_ylabel("Mean FST", fontsize=8)
+
+ax.tick_params(
+    axis="both",
+    labelsize=7,
+    length=3,
+    width=0.7
+)
+
+ax.spines["top"].set_visible(False)
+ax.spines["right"].set_visible(False)
+
+ax.spines["left"].set_linewidth(0.7)
+ax.spines["bottom"].set_linewidth(0.7)
+
+ax.legend(
+    frameon=False,
+    fontsize=7,
+    loc="upper center",
+    bbox_to_anchor=(0.5, -0.22),
+    ncol=1
+)
+
+plt.tight_layout(rect=[0, 0.08, 1, 1])
+
+plt.savefig(
+    "Chr10_adaptation_genes_FST.png",
+    dpi=600,
+    bbox_inches="tight"
+)
+
+plt.savefig(
+    "Chr10_adaptation_genes_FST.pdf",
+    bbox_inches="tight"
+)
+
+plt.close()
+
+print("Saved: Chr10_adaptation_genes_FST.png")
+print("Saved: Chr10_adaptation_genes_FST.pdf")
+
+#########################################################
+#########################################################
+#Global
+#########################################################
+#########################################################
+make_maturity_genes_genomewide_bed.py
+python make_maturity_genes_genomewide_bed.py
+########################################################
+#!/usr/bin/env python3
+
+import pandas as pd
+import numpy as np
+
+infile = "maturity_genes_genomewide_candidates.tsv"
+
+out_all_named = "maturity_genes_named_candidates.tsv"
+out_one_per_chr = "maturity_genes_one_per_chr.bed"
+out_one_per_chr_table = "maturity_genes_one_per_chr.tsv"
+
+df = pd.read_csv(infile, sep="\t", dtype=str).fillna("")
+
+# Keep only rows with Preferred_name
+df = df[
+    ~df["Preferred_name"].isin(["", "-", "NA", "nan", "None"])
+].copy()
+
+# Convert numeric columns
+df["score_num"] = pd.to_numeric(df["score"], errors="coerce")
+df["evalue_num"] = pd.to_numeric(df["evalue"], errors="coerce")
+df["start"] = pd.to_numeric(df["start"], errors="coerce").astype(int)
+df["end"] = pd.to_numeric(df["end"], errors="coerce").astype(int)
+
+# ------------------------------------------------------------
+# Priority system: known maturity/photoperiod first,
+# then hormone/height candidates, then broad B3/ARF candidates.
+# ------------------------------------------------------------
+priority = {
+    "ELF3": 1,
+    "GI": 1,
+    "PHYA": 1,
+    "CRY2": 2,
+    "APRR2": 2,
+    "GID1": 3,
+    "GID1a": 3,
+    "GA2ox3": 3,
+    "IAA20": 4,
+    "IAA32": 4,
+    "ARF17": 5,
+    "ARF8": 5,
+    "ARF6": 5,
+    "ARF11": 5,
+    "RAV1": 6,
+}
+
+def assign_priority(name):
+    if name in priority:
+        return priority[name]
+    if name.startswith("ARF"):
+        return 5
+    if name.startswith("IAA"):
+        return 4
+    return 9
+
+df["priority"] = df["Preferred_name"].apply(assign_priority)
+
+# Save all named candidates for inspection
+df.sort_values(["chr", "priority", "score_num"], ascending=[True, True, False]).to_csv(
+    out_all_named,
+    sep="\t",
+    index=False
+)
+
+# Pick one per chromosome:
+# 1. lowest priority score
+# 2. highest eggNOG score
+# 3. lowest e-value
+best = (
+    df.sort_values(
+        ["chr", "priority", "score_num", "evalue_num"],
+        ascending=[True, True, False, True]
+    )
+    .groupby("chr", as_index=False)
+    .first()
+)
+
+# Clean label
+best["label"] = best["Preferred_name"]
+
+# Save table
+best.to_csv(out_one_per_chr_table, sep="\t", index=False)
+
+# Save BED
+best[["chr", "start", "end", "label"]].to_csv(
+    out_one_per_chr,
+    sep="\t",
+    header=False,
+    index=False
+)
+
+print("Saved:", out_all_named)
+print("Saved:", out_one_per_chr_table)
+print("Saved:", out_one_per_chr)
+
+print("\nOne candidate per chromosome:")
+print(best[["chr", "start", "end", "Preferred_name", "candidate_class", "score", "evalue"]])
+
+
+####################################################################################################
+#python plot_allchr_maturity_fst_panel.py
+###################################################################################################
+#!/usr/bin/env python3
+
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# ============================================================
+# Inputs
+# ============================================================
+
+fst_file = "NorthEarly_vs_SouthLate_100kb_meanFST.bed"
+candidate_file = "maturity_genes_one_per_chr.bed"
+
+out_png = "AllChr_maturity_candidate_FST_panel_labelHighOnly.png"
+out_pdf = "AllChr_maturity_candidate_FST_panel_labelHighOnly.pdf"
+
+genome_mean_fst = 0.036055
+
+# ============================================================
+# Read FST windows
+# ============================================================
+
+fst = pd.read_csv(
+    fst_file,
+    sep=r"\s+",
+    header=None,
+    names=["chr", "start", "end", "fst"]
+)
+
+fst["fst"] = pd.to_numeric(fst["fst"], errors="coerce")
+fst = fst.dropna(subset=["fst"]).copy()
+
+fst["start"] = fst["start"].astype(int)
+fst["end"] = fst["end"].astype(int)
+fst["mid_mb"] = (fst["start"] + fst["end"]) / 2 / 1e6
+
+# Label only high-FST candidates
+label_threshold = fst["fst"].quantile(0.95)
+
+print("Genome mean FST:", genome_mean_fst)
+print("Top 5% FST threshold:", label_threshold)
+
+# ============================================================
+# Read candidate genes
+# BED: chr start end gene
+# ============================================================
+
+genes = pd.read_csv(
+    candidate_file,
+    sep="\t",
+    header=None,
+    names=["chr", "start", "end", "gene"]
+)
+
+genes["start"] = genes["start"].astype(int)
+genes["end"] = genes["end"].astype(int)
+genes["mid_mb"] = (genes["start"] + genes["end"]) / 2 / 1e6
+
+# ============================================================
+# Chromosome order
+# ============================================================
+
+available = fst["chr"].unique().tolist()
+
+if "Chr01" in available:
+    chrom_order = [f"Chr{i:02d}" for i in range(1, 21)]
+else:
+    chrom_order = [f"Chr{i}" for i in range(1, 21)]
+
+# ============================================================
+# Plot
+# ============================================================
+
+fig, axes = plt.subplots(
+    5,
+    4,
+    figsize=(11, 9),
+    sharey=True
+)
+
+axes = axes.flatten()
+
+global_ymax = fst["fst"].max()
+ylim_top = global_ymax * 1.45
+
+label_summary = []
+
+for ax, chrom in zip(axes, chrom_order):
+
+    sub = fst[fst["chr"] == chrom].copy()
+    gsub = genes[genes["chr"] == chrom].copy()
+
+    if len(sub) == 0:
+        ax.axis("off")
+        continue
+
+    ax.plot(
+        sub["mid_mb"],
+        sub["fst"],
+        color="black",
+        linewidth=0.6,
+        zorder=1
+    )
+
+    ax.scatter(
+        sub["mid_mb"],
+        sub["fst"],
+        color="black",
+        s=3,
+        alpha=0.8,
+        linewidth=0,
+        zorder=2
+    )
+
+    ax.axhline(
+        genome_mean_fst,
+        color="gray",
+        linestyle="--",
+        linewidth=0.5,
+        zorder=0
+    )
+
+    gsub = gsub.sort_values("mid_mb").reset_index(drop=True)
+
+    for _, g in gsub.iterrows():
+
+        start_mb = g["start"] / 1e6
+        end_mb = g["end"] / 1e6
+        mid_mb = g["mid_mb"]
+        name = g["gene"]
+
+        # Always draw candidate region
+        ax.axvspan(
+            start_mb,
+            end_mb,
+            color="red",
+            alpha=0.16,
+            zorder=0
+        )
+
+        # FST windows overlapping gene body
+        local = sub[
+            (sub["end"] >= g["start"]) &
+            (sub["start"] <= g["end"])
+        ]
+
+        if len(local) == 0:
+            continue
+
+        local_max_fst = local["fst"].max()
+
+        # Only label high-FST candidates
+        if local_max_fst < label_threshold:
+            continue
+
+        y_label = global_ymax * 1.12
+
+        ax.annotate(
+            name,
+            xy=(mid_mb, local_max_fst),
+            xytext=(mid_mb, y_label),
+            fontsize=5,
+            rotation=90,
+            ha="center",
+            va="bottom",
+            arrowprops=dict(
+                arrowstyle="-",
+                color="red",
+                lw=0.35,
+                shrinkA=0,
+                shrinkB=0
+            )
+        )
+
+        label_summary.append({
+            "chr": chrom,
+            "gene": name,
+            "start": g["start"],
+            "end": g["end"],
+            "local_max_fst": local_max_fst
+        })
+
+    ax.set_title(chrom, fontsize=8)
+    ax.set_ylim(0, ylim_top)
+
+    ax.tick_params(
+        axis="both",
+        labelsize=6,
+        length=2,
+        width=0.5
+    )
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_linewidth(0.5)
+    ax.spines["bottom"].set_linewidth(0.5)
+
+# Turn off unused axes
+for ax in axes[len(chrom_order):]:
+    ax.axis("off")
+
+# ============================================================
+# Shared labels and note
+# ============================================================
+
+fig.text(
+    0.5,
+    0.04,
+    "Chromosome position (Mb)",
+    ha="center",
+    fontsize=9
+)
+
+fig.text(
+    0.04,
+    0.5,
+    "Mean FST",
+    va="center",
+    rotation="vertical",
+    fontsize=9
+)
+
+fig.text(
+    0.5,
+    0.01,
+    f"Dashed line: genome-wide mean FST = {genome_mean_fst:.3f}; labels shown only for candidates with local FST ≥ top 5% threshold ({label_threshold:.3f}).",
+    ha="center",
+    fontsize=7
+)
+
+plt.tight_layout(rect=[0.06, 0.06, 1, 0.98])
+
+plt.savefig(
+    out_png,
+    dpi=600,
+    bbox_inches="tight"
+)
+
+plt.savefig(
+    out_pdf,
+    bbox_inches="tight"
+)
+
+plt.close()
+
+# ============================================================
+# Save labeled-gene summary
+# ============================================================
+
+label_df = pd.DataFrame(label_summary)
+
+label_df.to_csv(
+    "maturity_candidates_labeled_highFST_only.tsv",
+    sep="\t",
+    index=False
+)
+
+print("Saved:", out_png)
+print("Saved:", out_pdf)
+print("Saved: maturity_candidates_labeled_highFST_only.tsv")
+
+print("\nLabeled candidates:")
+print(label_df)
