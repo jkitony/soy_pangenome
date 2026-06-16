@@ -1147,6 +1147,7 @@ print(best[["chr", "start", "end", "Preferred_name", "candidate_class", "score",
 
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 
 # ============================================================
 # Inputs
@@ -1155,8 +1156,9 @@ import matplotlib.pyplot as plt
 fst_file = "NorthEarly_vs_SouthLate_100kb_meanFST.bed"
 candidate_file = "maturity_genes_one_per_chr.bed"
 
-out_png = "AllChr_maturity_candidate_FST_panel_labelHighOnly.png"
-out_pdf = "AllChr_maturity_candidate_FST_panel_labelHighOnly.pdf"
+out_png = "AllChr_maturity_candidate_FST_panel_allLabels.png"
+out_pdf = "AllChr_maturity_candidate_FST_panel_allLabels.pdf"
+out_table = "maturity_candidates_FST_status_allLabels.tsv"
 
 genome_mean_fst = 0.036055
 
@@ -1178,15 +1180,9 @@ fst["start"] = fst["start"].astype(int)
 fst["end"] = fst["end"].astype(int)
 fst["mid_mb"] = (fst["start"] + fst["end"]) / 2 / 1e6
 
-# Label only high-FST candidates
-label_threshold = fst["fst"].quantile(0.95)
-
-print("Genome mean FST:", genome_mean_fst)
-print("Top 5% FST threshold:", label_threshold)
-
 # ============================================================
 # Read candidate genes
-# BED: chr start end gene
+# BED format: chr start end gene
 # ============================================================
 
 genes = pd.read_csv(
@@ -1201,6 +1197,57 @@ genes["end"] = genes["end"].astype(int)
 genes["mid_mb"] = (genes["start"] + genes["end"]) / 2 / 1e6
 
 # ============================================================
+# Create candidate FST status table
+# ============================================================
+
+status_records = []
+
+for _, g in genes.iterrows():
+
+    sub = fst[fst["chr"] == g["chr"]].copy()
+
+    local = sub[
+        (sub["end"] >= g["start"]) &
+        (sub["start"] <= g["end"])
+    ]
+
+    if len(local) == 0:
+        local_max_fst = None
+        local_mean_fst = None
+        local_n_windows = 0
+    else:
+        local_max_fst = local["fst"].max()
+        local_mean_fst = local["fst"].mean()
+        local_n_windows = len(local)
+
+    above_threshold = (
+        local_max_fst is not None and
+        local_max_fst >= genome_mean_fst
+    )
+
+    status_records.append({
+        "chr": g["chr"],
+        "start": g["start"],
+        "end": g["end"],
+        "gene": g["gene"],
+        "local_n_windows": local_n_windows,
+        "local_max_fst": local_max_fst,
+        "local_mean_fst": local_mean_fst,
+        "threshold": genome_mean_fst,
+        "above_genome_mean": above_threshold,
+        "plot_color": "red" if above_threshold else "lightgray"
+    })
+
+status = pd.DataFrame(status_records)
+status = status.sort_values(["chr", "start"])
+
+status.to_csv(
+    out_table,
+    sep="\t",
+    index=False
+)
+
+# ============================================================
 # Chromosome order
 # ============================================================
 
@@ -1212,7 +1259,7 @@ else:
     chrom_order = [f"Chr{i}" for i in range(1, 21)]
 
 # ============================================================
-# Plot
+# Plot panel
 # ============================================================
 
 fig, axes = plt.subplots(
@@ -1225,14 +1272,12 @@ fig, axes = plt.subplots(
 axes = axes.flatten()
 
 global_ymax = fst["fst"].max()
-ylim_top = global_ymax * 1.45
-
-label_summary = []
+ylim_top = global_ymax * 1.55
 
 for ax, chrom in zip(axes, chrom_order):
 
     sub = fst[fst["chr"] == chrom].copy()
-    gsub = genes[genes["chr"] == chrom].copy()
+    gsub = status[status["chr"] == chrom].copy()
 
     if len(sub) == 0:
         ax.axis("off")
@@ -1264,67 +1309,63 @@ for ax, chrom in zip(axes, chrom_order):
         zorder=0
     )
 
-    gsub = gsub.sort_values("mid_mb").reset_index(drop=True)
+    gsub = gsub.sort_values("start").reset_index(drop=True)
 
-    for _, g in gsub.iterrows():
+    for i, g in gsub.iterrows():
 
         start_mb = g["start"] / 1e6
         end_mb = g["end"] / 1e6
-        mid_mb = g["mid_mb"]
-        name = g["gene"]
+        mid_mb = (g["start"] + g["end"]) / 2 / 1e6
 
-        # Always draw candidate region
+        name = g["gene"]
+        color = g["plot_color"]
+        local_max_fst = g["local_max_fst"]
+
+        # Draw candidate gene region
         ax.axvspan(
             start_mb,
             end_mb,
-            color="red",
-            alpha=0.16,
+            color=color,
+            alpha=0.24 if color == "red" else 0.18,
             zorder=0
         )
 
-        # FST windows overlapping gene body
-        local = sub[
-            (sub["end"] >= g["start"]) &
-            (sub["start"] <= g["end"])
-        ]
+        # Label all candidates
+        if color == "red":
+            label_y = global_ymax * 1.22
+            text_color = "red"
+            fontweight = "bold"
+            arrow_color = "red"
+        else:
+            label_y = global_ymax * 1.08
+            text_color = "dimgray"
+            fontweight = "normal"
+            arrow_color = "lightgray"
 
-        if len(local) == 0:
-            continue
-
-        local_max_fst = local["fst"].max()
-
-        # Only label high-FST candidates
-        if local_max_fst < label_threshold:
-            continue
-
-        y_label = global_ymax * 1.12
+        if pd.isna(local_max_fst):
+            local_max_fst = genome_mean_fst
 
         ax.annotate(
             name,
             xy=(mid_mb, local_max_fst),
-            xytext=(mid_mb, y_label),
+            xytext=(mid_mb, label_y),
             fontsize=5,
+            color=text_color,
+            fontweight=fontweight,
             rotation=90,
             ha="center",
             va="bottom",
             arrowprops=dict(
                 arrowstyle="-",
-                color="red",
+                color=arrow_color,
                 lw=0.35,
                 shrinkA=0,
                 shrinkB=0
             )
         )
 
-        label_summary.append({
-            "chr": chrom,
-            "gene": name,
-            "start": g["start"],
-            "end": g["end"],
-            "local_max_fst": local_max_fst
-        })
-
     ax.set_title(chrom, fontsize=8)
+
     ax.set_ylim(0, ylim_top)
 
     ax.tick_params(
@@ -1344,12 +1385,12 @@ for ax in axes[len(chrom_order):]:
     ax.axis("off")
 
 # ============================================================
-# Shared labels and note
+# Shared labels and legend
 # ============================================================
 
 fig.text(
     0.5,
-    0.04,
+    0.055,
     "Chromosome position (Mb)",
     ha="center",
     fontsize=9
@@ -1364,15 +1405,33 @@ fig.text(
     fontsize=9
 )
 
-fig.text(
-    0.5,
-    0.01,
-    f"Dashed line: genome-wide mean FST = {genome_mean_fst:.3f}; labels shown only for candidates with local FST ≥ top 5% threshold ({label_threshold:.3f}).",
-    ha="center",
-    fontsize=7
+legend_elements = [
+    Patch(
+        facecolor="red",
+        alpha=0.24,
+        label=f"Local max FST ≥ genome mean ({genome_mean_fst:.3f})"
+    ),
+    Patch(
+        facecolor="lightgray",
+        alpha=0.18,
+        label=f"Local max FST < genome mean ({genome_mean_fst:.3f})"
+    )
+]
+
+fig.legend(
+    handles=legend_elements,
+    loc="lower center",
+    bbox_to_anchor=(0.5, 0.005),
+    ncol=2,
+    frameon=False,
+    fontsize=8
 )
 
-plt.tight_layout(rect=[0.06, 0.06, 1, 0.98])
+plt.tight_layout(rect=[0.06, 0.09, 1, 0.98])
+
+# ============================================================
+# Save
+# ============================================================
 
 plt.savefig(
     out_png,
@@ -1387,21 +1446,22 @@ plt.savefig(
 
 plt.close()
 
-# ============================================================
-# Save labeled-gene summary
-# ============================================================
-
-label_df = pd.DataFrame(label_summary)
-
-label_df.to_csv(
-    "maturity_candidates_labeled_highFST_only.tsv",
-    sep="\t",
-    index=False
-)
-
 print("Saved:", out_png)
 print("Saved:", out_pdf)
-print("Saved: maturity_candidates_labeled_highFST_only.tsv")
+print("Saved:", out_table)
 
-print("\nLabeled candidates:")
-print(label_df)
+print("\nCandidate FST status:")
+print(
+    status[
+        [
+            "chr",
+            "gene",
+            "start",
+            "end",
+            "local_max_fst",
+            "local_mean_fst",
+            "above_genome_mean",
+            "plot_color"
+        ]
+    ]
+)
