@@ -837,7 +837,86 @@ plt.savefig("J_local_FST.png", dpi=600)
 plt.savefig("J_local_FST.pdf")
 
 plt.close()
+###########################################
+# python plot_CRY2_FST.py
+###########################################
 
+import pandas as pd
+import matplotlib.pyplot as plt
+
+fst = pd.read_csv(
+    "NorthEarly_vs_SouthLate_100kb_meanFST.bed",
+    sep=r"\s+",
+    header=None,
+    names=["chr", "start", "end", "fst"]
+)
+
+fst["fst"] = pd.to_numeric(fst["fst"], errors="coerce")
+fst = fst.dropna()
+
+# Chr02 CRY2-like candidate
+cry2_start = 627855
+cry2_end = 631479
+
+# Plot ±2 Mb around CRY2
+region = fst[
+    (fst["chr"] == "Chr02") &
+    (fst["start"] >= 0) &
+    (fst["end"] <= 3_000_000)
+].copy()
+
+fig, ax = plt.subplots(figsize=(3.5, 2))
+
+ax.plot(
+    region["start"] / 1e6,
+    region["fst"],
+    color="black",
+    linewidth=0.8
+)
+
+ax.scatter(
+    region["start"] / 1e6,
+    region["fst"],
+    s=10,
+    color="black"
+)
+
+ax.axvspan(
+    cry2_start / 1e6,
+    cry2_end / 1e6,
+    color="red",
+    alpha=0.3,
+    label="CRY2-like"
+)
+
+ax.axhline(
+    0.036055,
+    color="grey",
+    linestyle="--",
+    linewidth=0.8,
+    label="Genome mean FST"
+)
+
+ax.set_xlabel("Chr02 position (Mb)")
+ax.set_ylabel("Mean FST")
+
+ax.legend(
+    frameon=False,
+    fontsize=7
+)
+
+ax.spines["top"].set_visible(False)
+ax.spines["right"].set_visible(False)
+
+plt.tight_layout()
+
+plt.savefig("CRY2_local_FST.png", dpi=600, bbox_inches="tight")
+plt.savefig("CRY2_local_FST.pdf", bbox_inches="tight")
+
+plt.close()
+
+print("Saved: CRY2_local_FST.png")
+print("Saved: CRY2_local_FST.pdf")
 ################################
 #Chr10 focus
 ###############################
