@@ -1,0 +1,444 @@
+#!/usr/bin/env python3
+
+import json
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.lines import Line2D
+
+# =========================================================
+# FILES
+# =========================================================
+meta_file = "Meta_FINAL.csv"
+geojson_file = "world.geojson.json"
+
+out_csv = "Meta_FINAL_plot_coordinates_maturity_groups.csv"
+out_png = "soybean_maturity_groups_map_panel.png"
+out_pdf = "soybean_maturity_groups_map_panel.pdf"
+
+# =========================================================
+# SETTINGS
+# =========================================================
+MATURITY_COL = "Maturity_group"
+
+FIG_WIDTH = 1.9
+FIG_HEIGHT = 1.3
+PNG_DPI = 900
+
+MAP_EXTENT = [-170, 170, -60, 80]
+
+COUNTRY_FILL = "#e0e0e0"
+COUNTRY_EDGE = "white"
+
+GROUP_COLORS = {
+    "MG_000": "#08306b",
+    "MG_00": "#2171b5",
+    "MG_0": "#6baed6",
+    "MG_I": "#9ecae1",
+    "MG_II": "#c6dbef",
+    "MG_III": "#756bb1",
+    "MG_IV": "#31a354",
+    "MG_V": "#fdae6b",
+    "MG_VI": "#fd8d3c",
+    "MG_VII": "#f16913",
+    "MG_VIII": "#d94801",
+    "MG_IX": "#a63603",
+}
+
+valid_groups = list(GROUP_COLORS.keys())
+
+POINT_ALPHA = 0.85
+POINT_SIZE_SCALE = 4
+MIN_SIZE = 4
+LEGEND_SIZE = 3.7
+TITLE_SIZE = 5.5
+
+# =========================================================
+# READ METADATA
+# =========================================================
+try:
+    df = pd.read_csv(meta_file, encoding="utf-8")
+except UnicodeDecodeError:
+    df = pd.read_csv(meta_file, encoding="latin1", low_memory=False)
+
+df.columns = df.columns.str.strip()
+
+for col in ["Country", "Location", MATURITY_COL]:
+    if col not in df.columns:
+        raise ValueError(f"Missing column: {col}")
+    df[col] = df[col].astype(str).str.strip()
+
+missing_vals = {"NA", "N/A", "Unknown", "unknown", "", "nan", "Nan", "None", "<NA>"}
+
+df["Country"] = df["Country"].apply(lambda x: pd.NA if x in missing_vals else x)
+df["Location"] = df["Location"].apply(lambda x: pd.NA if x in missing_vals else x)
+df[MATURITY_COL] = df[MATURITY_COL].apply(lambda x: pd.NA if x in missing_vals else x)
+
+df = df.dropna(subset=["Country", MATURITY_COL]).copy()
+df = df[df[MATURITY_COL].isin(valid_groups)].copy()
+df = df[~df["Country"].isin({"South", "North"})].copy()
+
+# =========================================================
+# COUNTRY NORMALIZATION
+# =========================================================
+country_fix = {
+    "USA": "United States of America",
+    "U.S.A.": "United States of America",
+    "United States": "United States of America",
+    "Korea": "South Korea",
+    "Russian Federation": "Russia",
+    "Former Serbia and Montenegro": "Republic of Serbia",
+    "Serbia": "Republic of Serbia",
+    "Tanzania": "United Republic of Tanzania",
+    "China-Northeast China": "China",
+}
+
+df["Country"] = df["Country"].replace(country_fix)
+
+# =========================================================
+# LOCATION COORDINATES
+# =========================================================
+location_coords = {
+    # USA
+    ("United States of America", "Illinois"): (40.6331, -89.3985),
+    ("United States of America", "Missouri"): (37.9643, -91.8318),
+    ("United States of America", "Indiana"): (40.2672, -86.1349),
+    ("United States of America", "North Carolina"): (35.7596, -79.0193),
+    ("United States of America", "Ohio"): (40.4173, -82.9071),
+    ("United States of America", "Kansas"): (39.0119, -98.4842),
+    ("United States of America", "Arkansas"): (35.2010, -91.8318),
+    ("United States of America", "Minnesota"): (46.7296, -94.6859),
+    ("United States of America", "Virginia"): (37.4316, -78.6569),
+    ("United States of America", "Kentucky"): (37.8393, -84.2700),
+    ("United States of America", "Tennessee"): (35.5175, -86.5804),
+    ("United States of America", "Iowa"): (41.8780, -93.0977),
+    ("United States of America", "Mississippi"): (32.3547, -89.3985),
+    ("United States of America", "Arizona"): (34.0489, -111.0937),
+    ("United States of America", "South Carolina"): (33.8361, -81.1637),
+    ("United States of America", "Wisconsin"): (43.7844, -88.7879),
+    ("United States of America", "Maryland"): (39.0458, -76.6413),
+    ("United States of America", "Texas"): (31.9686, -99.9018),
+    ("United States of America", "Nebraska"): (41.4925, -99.9018),
+    ("United States of America", "Georgia"): (32.1656, -82.9001),
+    ("United States of America", "Louisiana"): (30.9843, -91.9623),
+    ("United States of America", "North Dakota"): (47.5515, -101.0020),
+    ("United States of America", "Michigan"): (44.3148, -85.6024),
+    ("United States of America", "Hawaii"): (19.8968, -155.5828),
+
+    # Canada
+    ("Canada", "Ontario"): (51.2538, -85.3232),
+
+    # China
+    ("China", "Jilin"): (43.8378, 126.5496),
+    ("China", "Jilin Sheng"): (43.8378, 126.5496),
+    ("China", "Henan Sheng"): (34.7657, 113.7536),
+    ("China", "henan"): (34.7657, 113.7536),
+    ("China", "Hebei Sheng"): (38.0428, 114.5149),
+    ("China", "He Bei"): (38.0428, 114.5149),
+    ("China", "Zhejiang Sheng"): (30.2674, 120.1536),
+    ("China", "Jiangsu Sheng"): (32.0617, 118.7632),
+    ("China", "Beijing Shi"): (39.9042, 116.4074),
+    ("China", "beijing"): (39.9042, 116.4074),
+    ("China", "Sichuan Sheng"): (30.6517, 104.0759),
+    ("China", "sichuan"): (30.6517, 104.0759),
+    ("China", "Heilongjiang Sheng"): (45.7420, 126.6629),
+    ("China", "Heilongjiang"): (45.7420, 126.6629),
+    ("China", "He Long Jiang"): (45.7420, 126.6629),
+    ("China", "Liaoning Sheng"): (41.8354, 123.4291),
+    ("China", "Liaoning"): (41.8354, 123.4291),
+    ("China", "Shandong Sheng"): (36.6683, 117.0204),
+    ("China", "Shandong"): (36.6683, 117.0204),
+    ("China", "Shanxi Sheng"): (37.8735, 112.5624),
+    ("China", "Shanxi"): (37.8735, 112.5624),
+    ("China", "Shanghai Shi"): (31.2304, 121.4737),
+    ("China", "Shaanxi Sheng"): (34.3416, 108.9398),
+    ("China", "Fujian Sheng"): (26.0745, 119.2965),
+    ("China", "Nei Mongol Zizhiqu"): (40.8175, 111.7652),
+    ("China", "nei monggol"): (40.8175, 111.7652),
+    ("China", "Xinjiang Uygur Zizhiqu"): (43.7930, 87.6271),
+    ("China", "Yunnan Sheng"): (25.0453, 102.7097),
+    ("China", "Jiangxi Sheng"): (28.6742, 115.9101),
+    ("China", "Gansu Sheng"): (36.0611, 103.8343),
+    ("China", "Anhui Sheng"): (31.8612, 117.2857),
+    ("China", "Hubei Sheng"): (30.5454, 114.3423),
+    ("China", "Guangdong Sheng"): (23.3790, 113.7633),
+    ("China", "Hunan Sheng"): (28.1127, 112.9838),
+    ("China", "Guizhou Sheng"): (26.5982, 106.7074),
+    ("China", "Tianjin Shi"): (39.3434, 117.3616),
+    ("China", "Hainan"): (19.5664, 109.9497),
+    ("China", "Northeast"): (45.0, 125.0),
+    ("China", "Northeast China"): (45.0, 125.0),
+    ("China", "Manchuria"): (45.0, 125.0),
+    ("China", "tangshan"): (39.6309, 118.1802),
+
+    # Japan
+    ("Japan", "Tokyo"): (35.6762, 139.6503),
+    ("Japan", "Tôkyô"): (35.6762, 139.6503),
+    ("Japan", "Hokkaido"): (43.2203, 142.8635),
+    ("Japan", "Hokkaidô"): (43.2203, 142.8635),
+    ("Japan", "Kyushu"): (33.0, 130.5),
+    ("Japan", "Shikoku"): (33.75, 133.5),
+    ("Japan", "Honshu"): (36.0, 138.0),
+    ("Japan", "Tohoku"): (39.0, 141.0),
+    ("Japan", "Tohuku"): (39.0, 141.0),
+    ("Japan", "Kanto"): (36.0, 139.5),
+    ("Japan", "kinki"): (34.7, 135.5),
+    ("Japan", "Kanagawa"): (35.4478, 139.6425),
+    ("Japan", "Saga"): (33.2494, 130.2988),
+    ("Japan", "Akita"): (39.7200, 140.1035),
+    ("Japan", "Okinawa"): (26.2124, 127.6809),
+    ("Japan", "Iwate"): (39.7036, 141.1527),
+    ("Japan", "Isikawa"): (36.5947, 136.6256),
+    ("Japan", "Saitama"): (35.8617, 139.6455),
+    ("Japan", "Hukuoka"): (33.5902, 130.4017),
+    ("Japan", "Simane"): (35.4723, 133.0505),
+    ("Japan", "Yamanasi"): (35.6642, 138.5684),
+    ("Japan", "Aiti"): (35.1802, 136.9066),
+    ("Japan", "Hyôgo"): (34.6913, 135.1830),
+    ("Japan", "Kumamoto"): (32.8031, 130.7079),
+    ("Japan", "Nagano"): (36.6513, 138.1810),
+    ("Japan", "Ibaraka"): (36.3418, 140.4468),
+    ("Japan", "Aomori"): (40.8244, 140.7400),
+    ("Japan", "Niigata"): (37.9026, 139.0232),
+    ("Japan", "Totigi"): (36.5658, 139.8836),
+    ("Japan", "Gihu"): (35.3912, 136.7223),
+    ("Japan", "Kagosima"): (31.5966, 130.5571),
+
+    # Korea
+    ("South Korea", "Seoul-teukbyeolsi"): (37.5665, 126.9780),
+    ("South Korea", "Gangwon-do"): (37.8228, 128.1555),
+    ("South Korea", "Kangweonto"): (37.8228, 128.1555),
+    ("South Korea", "Chungcheongbuk-do"): (36.8000, 127.7000),
+    ("South Korea", "Chungcheongnam-do"): (36.5184, 126.8000),
+    ("South Korea", "Kyonggi"): (37.4138, 127.5183),
+    ("South Korea", "Jeollanam-do"): (34.8161, 126.4630),
+    ("South Korea", "Gyeongsangbuk-do"): (36.4919, 128.8889),
+    ("South Korea", "Gyeongsangnam-do"): (35.4606, 128.2132),
+    ("South Korea", "Jeju-teukbyeoljachido"): (33.4996, 126.5312),
+    ("South Korea", "Jeollabuk-do"): (35.7175, 127.1530),
+    ("South Korea", "Busan-gwangyeoksi"): (35.1796, 129.0756),
+
+    # North Korea
+    ("North Korea", "Phyeongyang"): (39.0392, 125.7625),
+    ("North Korea", "Hamkyeongpukto"): (41.8149, 129.4582),
+    ("North Korea", "Hwanghaipukto"): (38.5052, 125.7560),
+    ("North Korea", "Phyeonganpukto"): (40.1436, 124.3981),
+
+    # Other regions
+    ("Taiwan", "Taiwan"): (23.6978, 120.9605),
+    ("Peru", "Lima"): (-12.0464, -77.0428),
+    ("India", "Uttar Pradesh"): (26.8467, 80.9462),
+    ("India", "Himachal Pradesh"): (31.1048, 77.1734),
+    ("India", "Madhya Pradesh"): (22.9734, 78.6569),
+    ("India", "Bihar"): (25.0961, 85.3131),
+    ("India", "Sikkim"): (27.5330, 88.5122),
+    ("India", "Jammu and Kashmir"): (33.7782, 76.5762),
+    ("Pakistan", "Gilgit-Baltistan"): (35.8026, 74.9832),
+    ("Philippines", "Luzon"): (16.5662, 121.2626),
+    ("Indonesia", "Jawa"): (-7.6145, 110.7122),
+    ("Indonesia", "east java"): (-7.5361, 112.2384),
+    ("Indonesia", "Bali"): (-8.3405, 115.0920),
+    ("Sweden", "Malmohus"): (55.6050, 13.0038),
+    ("Sweden", "Östergötlands län"): (58.3454, 15.5198),
+    ("Germany", "Nordrhein-Westfalen"): (51.4332, 7.6616),
+    ("Ukraine", "Dnipropetrovsk"): (48.4647, 35.0462),
+    ("Russia", "Primorye"): (45.0526, 135.0000),
+    ("Russia", "Habarovskij kraj"): (50.5888, 135.0000),
+    ("Russia", "Krasnodar"): (45.0393, 38.9872),
+    ("Russia", "Amur"): (53.5500, 127.8333),
+    ("Vietnam", "Tuyên Quang"): (21.8236, 105.2140),
+    ("Vietnam", "Hà Giang"): (22.8233, 104.9836),
+    ("Vietnam", "Lào Cai"): (22.4809, 103.9755),
+    ("Costa Rica", "Rica"): (9.7489, -83.7534),
+    ("El Salvador", "Salvador"): (13.7942, -88.8965),
+}
+
+# =========================================================
+# LOAD GEOJSON
+# =========================================================
+with open(geojson_file, "r", encoding="utf-8") as f:
+    geo = json.load(f)
+
+def get_feature_name(feature):
+    props = feature.get("properties", {})
+    for key in ["name", "ADMIN", "admin", "NAME", "country", "COUNTRY"]:
+        if key in props and props[key]:
+            return str(props[key]).strip()
+    return None
+
+# =========================================================
+# COUNTRY CENTROIDS
+# =========================================================
+country_centroids = {}
+
+for feature in geo["features"]:
+    name = get_feature_name(feature)
+    geom = feature.get("geometry")
+
+    if not name or geom is None:
+        continue
+
+    coords_list = []
+
+    if geom["type"] == "Polygon":
+        for ring in geom["coordinates"]:
+            coords_list.extend(ring)
+
+    elif geom["type"] == "MultiPolygon":
+        for poly in geom["coordinates"]:
+            for ring in poly:
+                coords_list.extend(ring)
+
+    if coords_list:
+        xs, ys = zip(*coords_list)
+        country_centroids[name] = (sum(ys) / len(ys), sum(xs) / len(xs))
+
+# =========================================================
+# ASSIGN COORDINATES
+# =========================================================
+def assign_coords(row):
+    country = row["Country"]
+    location = row["Location"]
+
+    if pd.notna(location):
+        key = (country, location)
+        if key in location_coords:
+            lat, lon = location_coords[key]
+            return pd.Series([f"{location}, {country}", lat, lon, "location"])
+
+    if country in country_centroids:
+        lat, lon = country_centroids[country]
+        return pd.Series([country, lat, lon, "country_centroid"])
+
+    return pd.Series([pd.NA, pd.NA, pd.NA, "unmapped"])
+
+df[["Plot_place", "Latitude", "Longitude", "Coord_source"]] = df.apply(assign_coords, axis=1)
+
+df_mapped = df.dropna(subset=["Latitude", "Longitude"]).copy()
+df_mapped.to_csv(out_csv, index=False)
+
+# =========================================================
+# AGGREGATE
+# =========================================================
+agg = (
+    df_mapped
+    .groupby(["Plot_place", "Latitude", "Longitude", MATURITY_COL], dropna=False)
+    .size()
+    .reset_index(name="Count")
+)
+
+agg["Size"] = np.log1p(agg["Count"]) * POINT_SIZE_SCALE + MIN_SIZE
+
+rng = np.random.default_rng(123)
+agg["Plot_lon"] = agg["Longitude"] + rng.normal(0, 0.35, len(agg))
+agg["Plot_lat"] = agg["Latitude"] + rng.normal(0, 0.25, len(agg))
+
+# =========================================================
+# PLOT
+# =========================================================
+fig, ax = plt.subplots(figsize=(FIG_WIDTH, FIG_HEIGHT))
+
+for feature in geo["features"]:
+    geom = feature.get("geometry")
+    if geom is None:
+        continue
+
+    if geom["type"] == "Polygon":
+        for ring in geom["coordinates"]:
+            xs, ys = zip(*ring)
+            ax.fill(
+                xs, ys,
+                facecolor=COUNTRY_FILL,
+                edgecolor=COUNTRY_EDGE,
+                linewidth=0.15,
+                zorder=1
+            )
+
+    elif geom["type"] == "MultiPolygon":
+        for poly in geom["coordinates"]:
+            for ring in poly:
+                xs, ys = zip(*ring)
+                ax.fill(
+                    xs, ys,
+                    facecolor=COUNTRY_FILL,
+                    edgecolor=COUNTRY_EDGE,
+                    linewidth=0.15,
+                    zorder=1
+                )
+
+for grp in valid_groups:
+    sub = agg[agg[MATURITY_COL] == grp]
+    if sub.empty:
+        continue
+
+    ax.scatter(
+        sub["Plot_lon"],
+        sub["Plot_lat"],
+        s=sub["Size"],
+        c=GROUP_COLORS[grp],
+        alpha=POINT_ALPHA,
+        edgecolors="black",
+        linewidths=0.12,
+        zorder=3
+    )
+
+legend_handles = [
+    Line2D(
+        [0], [0],
+        marker="o",
+        color="w",
+        label=grp.replace("MG_", ""),
+        markerfacecolor=GROUP_COLORS[grp],
+        markeredgecolor="black",
+        markeredgewidth=0.2,
+        markersize=2.8
+    )
+    for grp in valid_groups
+]
+
+ax.legend(
+    handles=legend_handles,
+    loc="lower left",
+    bbox_to_anchor=(-0.12, 0.01),
+    fontsize=LEGEND_SIZE,
+    frameon=False,
+    handlelength=0.7,
+    handletextpad=0.25,
+    labelspacing=0.15,
+    borderpad=0.1,
+    ncol=3
+)
+
+ax.set_xlim(MAP_EXTENT[0], MAP_EXTENT[1])
+ax.set_ylim(MAP_EXTENT[2], MAP_EXTENT[3])
+ax.set_aspect("auto")
+ax.set_xticks([])
+ax.set_yticks([])
+
+for spine in ax.spines.values():
+    spine.set_visible(False)
+
+ax.set_title("Maturity group distribution", fontsize=TITLE_SIZE, pad=1)
+
+fig.subplots_adjust(left=0.005, right=0.995, top=0.90, bottom=0.02)
+
+plt.savefig(out_png, dpi=PNG_DPI, bbox_inches="tight", pad_inches=0.003)
+plt.savefig(out_pdf, bbox_inches="tight", pad_inches=0.003)
+plt.show()
+
+# =========================================================
+# REPORT
+# =========================================================
+print(f"Saved coordinate table: {out_csv}")
+print(f"Saved PNG: {out_png}")
+print(f"Saved PDF: {out_pdf}")
+print(f"Mapped samples: {len(df_mapped)}")
+print(f"Unique plotted location-maturity combinations: {len(agg)}")
+
+print("\nMaturity group counts used:")
+print(df_mapped[MATURITY_COL].value_counts().sort_index())
+
+unmapped = df[df["Coord_source"] == "unmapped"]
+if len(unmapped) > 0:
+    print("\nUnmapped countries:")
+    print(unmapped["Country"].value_counts())
